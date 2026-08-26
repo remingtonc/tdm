@@ -21,12 +21,11 @@ necessary functionality.
 import logging
 import json
 import socket
-import errno
 import time
 import argparse
 from urllib.parse import urlparse
-from pyArango.connection import Connection
-from models import create_schema
+import psycopg2
+from models import create_schema, schema_exists
 from static import populate_static
 from yang import populate_yang
 from snmp import populate_snmp
@@ -56,16 +55,21 @@ def await_url(url, interval=3):
             sock.close()
             connected = True
 
-def create_database(conn):
-    """Create the database if it does not exist."""
-    db = None
-    created = False
-    if conn.hasDatabase('tdm'):
-        db = conn['tdm']
-    else:
-        db = conn.createDatabase('tdm')
-        created = True
-    return created, db
+def connect(pg_config):
+    """Connect to Postgres, retrying until it accepts connections."""
+    conn = None
+    while conn is None:
+        try:
+            conn = psycopg2.connect(
+                host=pg_config['host'],
+                port=pg_config['port'],
+                dbname=pg_config['dbname'],
+                user=pg_config['user'],
+                password=pg_config['password']
+            )
+        except psycopg2.OperationalError:
+            time.sleep(3)
+    return conn
 
 def main():
     """Entry point."""
@@ -74,33 +78,30 @@ def main():
     args = setup_args()
     logging.info('Loading configuration.')
     config = load_config()
+    pg_config = config['postgres']
     logging.info('Awaiting DBMS availability.')
-    await_url(config['dbms']['arangoURL'])
+    await_url('postgres://%s:%s' % (pg_config['host'], pg_config['port']))
     logging.info('Awaiting DBMS connectivity.')
-    conn = None
-    while conn == None:
-        try:
-            conn = Connection(**config['dbms'])
-        except:
-            time.sleep(3)
-    logging.info('Creating database.')
-    created, db = create_database(conn)
+    conn = connect(pg_config)
+    logging.info('Checking database schema.')
+    created = not schema_exists(conn)
     if not created:
-        logging.error('TDM database already exists! Not overwriting.')
+        logging.error('TDM schema already exists! Not overwriting.')
     else:
         logging.info('Creating database schema.')
-        create_schema(db)
+        create_schema(conn)
         logging.info('Populating static data.')
-        populate_static(db)
+        populate_static(conn)
         logging.info('Populating MIB data.')
-        populate_snmp(db)
+        populate_snmp(conn)
         logging.info('Populating YANG data.')
-        populate_yang(db)
+        populate_yang(conn)
     if created or args.stage == 'search':
         logging.info('Awaiting Search availability.')
         await_url(config['search']['searchURL'])
         logging.info('Populating search database with parsed data.')
-        populate_search(db, config['search']['searchURL'])
+        populate_search(conn, config['search']['searchURL'])
+    conn.close()
     logging.info('ETL process complete!')
 
 def setup_args():

@@ -12,120 +12,66 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 """
-"""Populate static business data that is otherwise conceptual 
+"""Populate static business data that is otherwise conceptual
 and not able to be directly parsed from data itself.
 """
 
-def populate_data_model_languages(db):
+def populate_data_model_languages(conn):
     """Populate everything related to individual Data Model Languages.
     Transport Protocols, Encodings, Control Protocols, Data Types, and DMLs.
-    Creates vertices and relationship edges.
     """
+    cur = conn.cursor()
     # Define Transport Protocols
     transport_protocols = {
-        'TCP': db['TransportProtocol'].createDocument({
-            '_key': 'TCP',
-            'name': 'TCP',
-            'description': 'Transmission Control Protocol'
-        }),
-        'UDP': db['TransportProtocol'].createDocument({
-            '_key': 'UDP',
-            'name': 'UDP',
-            'description': 'User Datagram Protocol'
-        }),
-        'SSH': db['TransportProtocol'].createDocument({
-            '_key': 'SSH',
-            'name': 'SSH',
-            'description': 'Secure SHell'
-        }),
-        'Telnet': db['TransportProtocol'].createDocument({
-            '_key': 'Telnet',
-            'name': 'Telnet',
-            'description': 'Insecure but oh so handy'
-        }),
-        'HTTP': db['TransportProtocol'].createDocument({
-            '_key': 'HTTP',
-            'name': 'HTTP',
-            'description': 'HyperText Transfer Protocol'
-        })
+        'TCP': 'Transmission Control Protocol',
+        'UDP': 'User Datagram Protocol',
+        'SSH': 'Secure SHell',
+        'Telnet': 'Insecure but oh so handy',
+        'HTTP': 'HyperText Transfer Protocol'
     }
-    for doc in transport_protocols.values():
-        doc.save()
+    transport_protocol_ids = {}
+    for name, description in transport_protocols.items():
+        cur.execute(
+            'INSERT INTO transport_protocol (name, description) VALUES (%s, %s) '
+            'RETURNING transport_protocol_id',
+            (name, description)
+        )
+        transport_protocol_ids[name] = cur.fetchone()[0]
     # Define Encodings
     encodings = {
-        'JSON': db['Encoding'].createDocument({
-            '_key': 'JSON',
-            'name': 'JSON',
-            'description': 'JavaScript Object Notation'
-        }),
-        'XML': db['Encoding'].createDocument({
-            '_key': 'XML',
-            'name': 'XML',
-            'description': 'eXtensible Markup Language'
-        }),
-        'GPB': db['Encoding'].createDocument({
-            '_key': 'GPB',
-            'name': 'GPB',
-            'description': 'Google Protocol Buffer'
-        }),
-        'KV-GPB': db['Encoding'].createDocument({
-            '_key': 'KV-GPB',
-            'name': 'KV-GPB',
-            'description': 'Key/Value Google Protocol Buffer'
-        }),
-        'BER': db['Encoding'].createDocument({
-            '_key': 'BER',
-            'name': 'BER',
-            'description': 'Basic Encoding Rules, defined in X.209. Used in SNMP.'
-        }),
-        'Text': db['Encoding'].createDocument({
-            '_key': 'Text',
-            'name': 'Text',
-            'description': 'Text'
-        })
+        'JSON': 'JavaScript Object Notation',
+        'XML': 'eXtensible Markup Language',
+        'GPB': 'Google Protocol Buffer',
+        'KV-GPB': 'Key/Value Google Protocol Buffer',
+        'BER': 'Basic Encoding Rules, defined in X.209. Used in SNMP.',
+        'Text': 'Text'
     }
-    for doc in encodings.values():
-        doc.save()
+    encoding_ids = {}
+    for name, description in encodings.items():
+        cur.execute(
+            'INSERT INTO encoding (name, description) VALUES (%s, %s) '
+            'RETURNING encoding_id',
+            (name, description)
+        )
+        encoding_ids[name] = cur.fetchone()[0]
     # Define Control Protocols
     control_protocols = {
-        'gRPC': db['ControlProtocol'].createDocument({
-            '_key': 'gRPC',
-            'name': 'gRPC',
-            'description': 'gRPC Remote Procedure Call'
-        }),
-        'NETCONF': db['ControlProtocol'].createDocument({
-            '_key': 'NETCONF',
-            'name': 'NETCONF',
-            'description': 'Network Configuration Protocol'
-        }),
-        'SNMP': db['ControlProtocol'].createDocument({
-            '_key': 'SNMP',
-            'name': 'SNMP',
-            'description': 'Simple Network Management Protocol'
-        }),
-        'MDT': db['ControlProtocol'].createDocument({
-            '_key': 'MDT',
-            'name': 'MDT',
-            'description': 'Model-Driven Telemetry'
-        }),
-        'CLI': db['ControlProtocol'].createDocument({
-            '_key': 'CLI',
-            'name': 'CLI',
-            'description': 'Command Line Interface'
-        }),
-        'RESTCONF': db['ControlProtocol'].createDocument({
-            '_key': 'RESTCONF',
-            'name': 'RESTCONF',
-            'description': 'NETCONF -> REST'
-        }),
-        'NX-API': db['ControlProtocol'].createDocument({
-            '_key': 'NX-API',
-            'name': 'NX-API',
-            'description': 'NX-API'
-        })
+        'gRPC': 'gRPC Remote Procedure Call',
+        'NETCONF': 'Network Configuration Protocol',
+        'SNMP': 'Simple Network Management Protocol',
+        'MDT': 'Model-Driven Telemetry',
+        'CLI': 'Command Line Interface',
+        'RESTCONF': 'NETCONF -> REST',
+        'NX-API': 'NX-API'
     }
-    for doc in control_protocols.values():
-        doc.save()
+    control_protocol_ids = {}
+    for name, description in control_protocols.items():
+        cur.execute(
+            'INSERT INTO control_protocol (name, description) VALUES (%s, %s) '
+            'RETURNING control_protocol_id',
+            (name, description)
+        )
+        control_protocol_ids[name] = cur.fetchone()[0]
     # Control Protocols -> Encodings
     cp_has_encodings = {
         'gRPC': ['GPB', 'KV-GPB'],
@@ -136,11 +82,12 @@ def populate_data_model_languages(db):
         'RESTCONF': ['XML', 'JSON'],
         'NX-API': ['XML', 'JSON']
     }
-    for key, values in cp_has_encodings.items():
-        for cp_key in values:
-            db['HasEncoding'].createEdge().links(
-                control_protocols[key],
-                encodings[cp_key]
+    for cp_name, enc_names in cp_has_encodings.items():
+        for enc_name in enc_names:
+            cur.execute(
+                'INSERT INTO control_protocol_encoding (control_protocol_id, encoding_id) '
+                'VALUES (%s, %s)',
+                (control_protocol_ids[cp_name], encoding_ids[enc_name])
             )
     # Control Protocols -> Transport Protocols
     cp_has_tps = {
@@ -152,11 +99,12 @@ def populate_data_model_languages(db):
         'RESTCONF': ['HTTP'],
         'NX-API': ['HTTP']
     }
-    for key, values in cp_has_tps.items():
-        for tp_key in values:
-            db['HasTransportProtocol'].createEdge().links(
-                control_protocols[key],
-                transport_protocols[tp_key]
+    for cp_name, tp_names in cp_has_tps.items():
+        for tp_name in tp_names:
+            cur.execute(
+                'INSERT INTO control_protocol_transport_protocol '
+                '(control_protocol_id, transport_protocol_id) VALUES (%s, %s)',
+                (control_protocol_ids[cp_name], transport_protocol_ids[tp_name])
             )
     # Define Data Model Languages
     # Data Model Languages -> Data Types
@@ -217,26 +165,29 @@ def populate_data_model_languages(db):
             'control_protocols': ['CLI']
         }
     }
-    for key, value in data_model_languages.items():
-        new_dml = db['DataModelLanguage'].createDocument({
-            '_key': arangify_key(key),
-            'name': key,
-            'description': value['description']
-        })
-        new_dml.save()
-        for dt_key, dt_value in value['data_types'].items():
-            new_dt = db['DataType'].createDocument({
-                '_key': arangify_key('%s+%s' % (key, dt_key)),
-                'name': dt_key,
-                'description': dt_value[0],
-                'is_primitive': dt_value[1]
-            })
-            new_dt.save()
-            db['DataModelLanguageHasDataType'].createEdge().links(new_dml, new_dt)
-        for cp_key in value['control_protocols']:
-            db['HasControlProtocol'].createEdge().links(new_dml, control_protocols[cp_key])
+    for name, value in data_model_languages.items():
+        cur.execute(
+            'INSERT INTO data_model_language (name, description) VALUES (%s, %s) '
+            'RETURNING data_model_language_id',
+            (name, value['description'])
+        )
+        dml_id = cur.fetchone()[0]
+        for dt_name, (dt_description, dt_is_primitive) in value['data_types'].items():
+            cur.execute(
+                'INSERT INTO data_type (data_model_language_id, name, description, is_primitive) '
+                'VALUES (%s, %s, %s, %s)',
+                (dml_id, dt_name, dt_description, dt_is_primitive)
+            )
+        for cp_name in value['control_protocols']:
+            cur.execute(
+                'INSERT INTO data_model_language_control_protocol '
+                '(data_model_language_id, control_protocol_id) VALUES (%s, %s)',
+                (dml_id, control_protocol_ids[cp_name])
+            )
+    conn.commit()
+    cur.close()
 
-def populate_os_releases(db):
+def populate_os_releases(conn):
     """Populate OSes and releases.
     Derived from YANG repository directories for now.
     https://github.com/YangModels/yang/tree/master/vendor/cisco
@@ -317,28 +268,24 @@ def populate_os_releases(db):
             ]
         }
     }
-    for key, value in oses.items():
-        new_os = db['OS'].createDocument({
-            '_key': arangify_key(key),
-            'name': key,
-            'description': value['description']
-        })
-        new_os.save()
-        previous_release = None
-        for release in value['releases']:
-            new_release = db['Release'].createDocument({
-                '_key': arangify_key('%s+%s' % (key, release)),
-                'name': release
-            })
-            new_release.save()
-            db['OSHasRelease'].createEdge().links(new_os, new_release)
-            if previous_release is not None:
-                db['ReleaseRevision'].createEdge().links(previous_release, new_release)
-            previous_release = new_release
+    cur = conn.cursor()
+    for os_name, os_value in oses.items():
+        cur.execute(
+            'INSERT INTO os (name, description) VALUES (%s, %s) RETURNING os_id',
+            (os_name, os_value['description'])
+        )
+        os_id = cur.fetchone()[0]
+        previous_release_id = None
+        for release_name in os_value['releases']:
+            cur.execute(
+                'INSERT INTO release (os_id, name, previous_release_id) VALUES (%s, %s, %s) '
+                'RETURNING release_id',
+                (os_id, release_name, previous_release_id)
+            )
+            previous_release_id = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
 
-def arangify_key(key):
-    return key.replace(' ', '_')
-
-def populate_static(db):
-    populate_os_releases(db)
-    populate_data_model_languages(db)
+def populate_static(conn):
+    populate_os_releases(conn)
+    populate_data_model_languages(conn)

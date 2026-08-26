@@ -196,7 +196,7 @@ class SNMPPopulator:
                     json.dump(newdict, f, indent=4)
             counter += 1
         
-    def parse_json_to_db(self, db):
+    def parse_json_to_db(self, conn):
         json_filenames = []
         for filename in os.listdir(self.new_json_dir):
             try:
@@ -207,10 +207,13 @@ class SNMPPopulator:
         if not json_filenames:
             logging.error('No files to parse into db!')
             return
-        logging.debug('Resetting session to mitigate session timeout (???).')
-        db.connection.resetSession('root', 'tdm')
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT data_model_language_id FROM data_model_language WHERE name = %s',
+            ('SMI',)
+        )
+        dml_id = cur.fetchone()[0]
         oid_cache = {}
-        dml_node = db['DataModelLanguage']['SMI']
         for filename in json_filenames:
             model_name = filename[:-5]
             """TODO: THIS IS BARE MINIMUM
@@ -232,19 +235,15 @@ class SNMPPopulator:
                 "contactinfo": " Cisco Systems Customer Service Postal: 170 W Tasman Drive San Jose, CA 95134 USA Tel: +1 800 553-NETS E-mail: wireless-nms@cisco.com",
                 "description": "This module defines textual conventions used in Cisco Wireless MIBs."
             },
-            _key is ideally model_name@revision
-            revision is the latest revision, we can't know revision content without having each revision sequentially.
+            revision is the latest revision, we can't know revision content without having each revision sequentially;
+            revision column is NOT NULL so it's left as '' until this is resolved.
             """
-            dm_node = db['DataModel'].createDocument(
-                {
-                    '_key': model_name,
-                    'name': model_name,
-                    'revision': None,
-                    'content': None,
-                    'parsed_checksum': None
-                }
+            cur.execute(
+                'INSERT INTO data_model (data_model_language_id, name, revision) VALUES (%s, %s, %s) '
+                'RETURNING data_model_id',
+                (dml_id, model_name, '')
             )
-            db['OfDataModelLanguage'].createEdge().links(dml_node, dm_node)
+            dm_id = cur.fetchone()[0]
             mib_json = None
             file_path = os.path.join(self.new_json_dir, filename)
             with open(file_path, 'r') as json_fd:
@@ -260,29 +259,35 @@ class SNMPPopulator:
                 Look in static.py under SMI for primitive data types derived from RFCs.
                 We should also link the DataPath to the corresponding DataType node.
                 """
-                path_node = None
+                path_id = None
                 if oid in oid_cache.keys():
                     logging.error('Duplicate oid %s from %s in %s!', oid, oid_cache[oid]['model'], model_name)
-                    path_node = oid_cache[oid]['obj']
+                    path_id = oid_cache[oid]['id']
                 else:
-                    path_node = db['DataPath'].createDocument(
-                        {
-                            'machine_id': oid,
-                            'human_id': oid_info['name'],
-                            'description': oid_info['description'],
-                            'is_leaf': True if oid_info['dataType'] else False,
-                            'is_variable': False,
-                            'is_configurable': False,
-                            'verified': False
-                        }
+                    cur.execute(
+                        'INSERT INTO data_path (machine_id, human_id, description, is_leaf) '
+                        'VALUES (%s, %s, %s, %s) RETURNING data_path_id',
+                        (
+                            oid,
+                            oid_info['name'],
+                            oid_info['description'],
+                            True if oid_info['dataType'] else False
+                        )
                     )
+                    path_id = cur.fetchone()[0]
                     oid_cache[oid] = {
                         'model': model_name,
-                        'obj': path_node
+                        'id': path_id
                     }
-                db['DataPathFromDataModel'].createEdge().links(dm_node, path_node, waitForSync=True)
+                cur.execute(
+                    'INSERT INTO data_path_source (data_path_id, data_model_id) VALUES (%s, %s) '
+                    'ON CONFLICT DO NOTHING',
+                    (path_id, dm_id)
+                )
+        conn.commit()
+        cur.close()
 
-def populate_snmp(db):
+def populate_snmp(conn):
     """Entry point of populating SNMP data."""
     # TODO: Remove hardcoding of paths.
     # Customized to Docker volume pathing.
@@ -296,7 +301,7 @@ def populate_snmp(db):
     snmppop.download_mibs()
     snmppop.transform_mibs_to_json()
     snmppop.transform_json_to_new()
-    snmppop.parse_json_to_db(db)
+    snmppop.parse_json_to_db(conn)
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG)

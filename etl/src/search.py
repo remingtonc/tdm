@@ -20,51 +20,54 @@ from elasticsearch import Elasticsearch
 from elasticsearch.helpers import streaming_bulk
 from elasticsearch.exceptions import TransportError
 
+DATAPATH_QUERY = """
+    SELECT
+        dp.data_path_id AS dp_key,
+        dp.machine_id AS dp_machine_id,
+        dp.human_id AS dp_human_id,
+        dp.description AS dp_description,
+        dp.is_leaf AS dp_is_leaf,
+        dp.is_configurable AS dp_is_configurable,
+        dml.data_model_language_id AS dml_key,
+        dml.name AS dml_name,
+        dm.data_model_id AS dm_key,
+        dm.name AS dm_name,
+        dm.revision AS dm_revision,
+        r.release_id AS release_key,
+        r.name AS release_name,
+        os.os_id AS os_key,
+        os.name AS os_name
+    FROM data_path dp
+    JOIN data_path_source dps ON dps.data_path_id = dp.data_path_id
+    JOIN data_model dm ON dm.data_model_id = dps.data_model_id
+    JOIN data_model_language dml ON dml.data_model_language_id = dm.data_model_language_id
+    LEFT JOIN release_data_model rdm ON rdm.data_model_id = dm.data_model_id
+    LEFT JOIN release r ON r.release_id = rdm.release_id
+    LEFT JOIN os ON os.os_id = r.os_id
+"""
 
-def populate_search(db, search_host='search:9200', index='datapath', doc_type='doc'):
+def populate_search(conn, search_host='search:9200', index='datapath', doc_type='doc'):
     logging.getLogger('elasticsearch').setLevel(logging.WARN)
     logging.info('Acquiring DataPaths from TDM...')
-    query_iterable = query_all_datapaths(db)
+    query_iterable = query_all_datapaths(conn)
     logging.info('Setting up ES...')
     es = Elasticsearch(search_host)
     setup_search_db(es, index)
     logging.info('Populating ES with DataPaths...')
     populate_search_db(es, query_iterable, index, doc_type)
+    conn.commit()
 
-def query_all_datapaths(db):
+def query_all_datapaths(conn):
     """Queries TDM and flattens the DataPath structure for our search purposes.
-    2 stage query due to not all DataPaths being linked to OS/Releases (OIDs).
+    Streams rows via a server-side cursor since this is ~2M rows.
     """
-    query = """
-    RETURN FLATTEN(
-        FOR dp IN DataPath
-            FOR v, e, p IN 2..2 INBOUND dp DataPathFromDataModel, OfDataModelLanguage
-                LET dp_min = {
-                    "dp_key": p.vertices[0]._key,
-                    "dp_machine_id": p.vertices[0].machine_id,
-                    "dp_human_id": p.vertices[0].human_id,
-                    "dp_description": p.vertices[0].description,
-                    "dp_is_leaf": p.vertices[0].is_leaf,
-                    "dp_is_configurable": p.vertices[0].is_configurable,
-                    "dml_key": p.vertices[2]._key,
-                    "dml_name": p.vertices[2].name
-                }
-                LET dp_ext = (
-                    FOR subv, sube, subp IN 2..2 INBOUND p.vertices[1] ReleaseHasDataModel, OSHasRelease
-                        RETURN {
-                            "dm_key": subp.vertices[0]._key,
-                            "dm_name": subp.vertices[0].name,
-                            "dm_revision": subp.vertices[0].revision,
-                            "release_key": subp.vertices[1]._key,
-                            "release_name": subp.vertices[1].name,
-                            "os_key": subp.vertices[2]._key,
-                            "os_name": subp.vertices[2].name
-                        }
-                )
-                RETURN LENGTH(dp_ext) != 0 ? (FOR ext IN dp_ext RETURN MERGE(dp_min, ext)) : dp_min
-    )
-    """
-    return db.AQLQuery(query, rawResults=True, batchSize=1000)
+    cur = conn.cursor('datapath_search_cursor')
+    cur.itersize = 1000
+    cur.execute(DATAPATH_QUERY)
+    columns = [desc[0] for desc in cur.description]
+    for row in cur:
+        yield dict(zip(columns, row))
+    cur.close()
 
 def setup_search_db(es, index):
     """Setup the index in ES for our data. Derived from:
@@ -167,17 +170,9 @@ def populate_search_db(es, query_iterable, index, doc_type):
     Derived from https://github.com/elastic/elasticsearch-py/blob/master/example/load.py#L102
     """
     def iter_add_id(iterable):
-        """We need to add a uid before insertion (I think).
-        Every example seen has an _id property in the struct.
-        """
-        counter = 0
-        for result in iterable:
-            if not isinstance(result, (list,)):
-                logging.error('Expected result to be list in iterable!')
-            for element in result:
-                element['_id'] = counter
-                counter += 1
-                yield element
+        for counter, element in enumerate(iterable):
+            element['_id'] = counter
+            yield element
     for ok, result in streaming_bulk(
             es,
             iter_add_id(query_iterable),

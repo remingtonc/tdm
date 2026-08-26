@@ -124,14 +124,28 @@ dp_cache = {}
 dt_cache = {}
 # This is the most memory inefficient thing I've ever done.
 dm_dp_cache = set()
-dp_dt_cache = set()
-dp_link_cache = set()
+
+def get_release_id(cur, os_name, release_name):
+    cur.execute(
+        'SELECT r.release_id FROM release r JOIN os USING (os_id) '
+        'WHERE os.name = %s AND r.name = %s',
+        (os_name, release_name)
+    )
+    row = cur.fetchone()
+    if row is None:
+        raise KeyError('Release %s %s not found' % (os_name, release_name))
+    return row[0]
 
 # TODO: Revise everything beneath this line.
-def populate_yang(db):
+def populate_yang(conn):
     """Entry point of populating YANG data."""
     logging.info('Acquiring YANG models for data extraction.')
     base_model_path = acquire_source()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT data_model_language_id FROM data_model_language WHERE name = 'YANG'"
+    )
+    dml_id = cur.fetchone()[0]
     for os_key, version_map in os_version_folder_map.items():
         logging.info('Transforming %s data.', os_map[os_key])
         versioned_data = YANGBase(
@@ -139,81 +153,81 @@ def populate_yang(db):
             os_key,
             version_map
         ).parse_versions()
-        logging.debug('Resetting session to mitigate session timeout (???).')
-        db.connection.resetSession('root', 'tdm')
         for version, modules in versioned_data.items():
             logging.info('Loading %s %s data.', os_map[os_key], version)
-            add_version_modules(db, os_key, version, modules)
+            release_id = get_release_id(cur, os_map[os_key], version)
+            add_version_modules(conn, cur, dml_id, release_id, modules)
 
-def add_version_modules(db, os_key, version, modules):
+def add_version_modules(conn, cur, dml_id, release_id, modules):
     """Add the DataModels to the corresponding OS/Release."""
-    version_key = '%s+%s' % (os_map[os_key], version)
-    version_node = db['Release'][version_key]
-    dml_node = db['DataModelLanguage']['YANG']
     for module_name, revisions in modules.items():
-        parent_dm = None
+        parent_dm_id = None
         for revision in sorted(revisions.keys()):
             module = revisions[revision]
             dm_key = '%s+%s' % (module_name, revision)
-            dm_node = None
-            if dm_key in dm_cache.keys():
-                dm_node = dm_cache[dm_key]
-            else:
-                dm_node = db['DataModel'].createDocument({
-                    '_key': dm_key,
-                    'name': module_name,
-                    'revision': revision,
-                    'content': None,
-                    'parsed_checksum': None
-                })
-                db['OfDataModelLanguage'].createEdge().links(dml_node, dm_node)
-                dm_cache[dm_key] = dm_node
-            if parent_dm is not None:
-                db['DataModelParent'].createEdge().links(dm_node, parent_dm, waitForSync=True)
-                db['DataModelChild'].createEdge().links(parent_dm, dm_node, waitForSync=True)
-            parent_dm = dm_node
-            db['ReleaseHasDataModel'].createEdge().links(version_node, dm_node, waitForSync=True)
-            add_data_paths_to_dm(db, dm_node, module)
+            dm_id = dm_cache.get(dm_key)
+            if dm_id is None:
+                cur.execute(
+                    'INSERT INTO data_model (data_model_language_id, name, revision, parent_id) '
+                    'VALUES (%s, %s, %s, %s) RETURNING data_model_id',
+                    (dml_id, module_name, revision, parent_dm_id)
+                )
+                dm_id = cur.fetchone()[0]
+                dm_cache[dm_key] = dm_id
+            cur.execute(
+                'INSERT INTO release_data_model (release_id, data_model_id) VALUES (%s, %s) '
+                'ON CONFLICT DO NOTHING',
+                (release_id, dm_id)
+            )
+            add_data_paths_to_dm(cur, dm_id, dml_id, module)
+            parent_dm_id = dm_id
+    conn.commit()
 
-def add_data_paths_to_dm(db, dm_node, module, dp_parent=None):
+def add_data_paths_to_dm(cur, dm_id, dml_id, module, dp_parent_id=None):
     """Add the parsed DataPaths from the corresponding DataModels."""
     for _, path_data in module.items():
         path_key = path_data['machine_id']
-        path_node = None
-        if path_key in dp_cache.keys():
-            path_node = dp_cache[path_key]
-        else:
-            path_node = db['DataPath'].createDocument({
-                'machine_id': path_key,
-                'human_id': path_data['xpath'],
-                'description': path_data['description'],
-                'is_leaf': False if path_data['children'] else True,
-                'is_variable': False,
-                'is_configurable': path_data['rw'],
-                'verified': False
-            })
-            dp_cache[path_key] = path_node
-        if {dm_node['_key'], path_node['_key']} not in dm_dp_cache:
-            db['DataPathFromDataModel'].createEdge().links(dm_node, path_node, waitForSync=True)
-            dm_dp_cache.add(frozenset({dm_node['_key'], path_node['_key']}))
+        path_id = dp_cache.get(path_key)
+        if path_id is None:
+            cur.execute(
+                'INSERT INTO data_path (machine_id, human_id, description, is_leaf, is_configurable, parent_id) '
+                'VALUES (%s, %s, %s, %s, %s, %s) RETURNING data_path_id',
+                (
+                    path_key,
+                    path_data['xpath'],
+                    path_data['description'],
+                    False if path_data['children'] else True,
+                    path_data['rw'],
+                    dp_parent_id
+                )
+            )
+            path_id = cur.fetchone()[0]
+            dp_cache[path_key] = path_id
+        if (dm_id, path_id) not in dm_dp_cache:
+            cur.execute(
+                'INSERT INTO data_path_source (data_path_id, data_model_id) VALUES (%s, %s) '
+                'ON CONFLICT DO NOTHING',
+                (path_id, dm_id)
+            )
+            dm_dp_cache.add((dm_id, path_id))
         if path_data['primitive_type'] is not None:
-            type_node = None
             type_key = 'YANG+%s' % path_data['primitive_type']
-            if type_key in dt_cache.keys():
-                type_node = dt_cache[type_key]
-            else:
-                try:
-                    type_node = db['DataType'][type_key]
-                    dt_cache[type_key] = type_node
-                except KeyError:
+            type_id = dt_cache.get(type_key)
+            if type_id is None:
+                cur.execute(
+                    'SELECT data_type_id FROM data_type '
+                    'WHERE data_model_language_id = %s AND name = %s',
+                    (dml_id, path_data['primitive_type'])
+                )
+                row = cur.fetchone()
+                if row is None:
                     logging.error('Could not resolve DataType %s!', type_key)
-                    raise
-            if {path_node['_key'], type_node['_key']} not in dp_dt_cache:
-                db['OfDataType'].createEdge().links(path_node, type_node, waitForSync=True)
-                dp_dt_cache.add(frozenset({path_node['_key'], type_node['_key']}))
-        if dp_parent is not None and {dp_parent['_key'], path_node['_key']} not in dp_link_cache:
-            db['DataPathChild'].createEdge().links(dp_parent, path_node, waitForSync=True)
-            db['DataPathParent'].createEdge().links(path_node, dp_parent, waitForSync=True)
-            dp_link_cache.add(frozenset({dp_parent['_key'], path_node['_key']}))
+                    raise KeyError(type_key)
+                type_id = row[0]
+                dt_cache[type_key] = type_id
+            cur.execute(
+                'UPDATE data_path SET data_type_id = %s WHERE data_path_id = %s',
+                (type_id, path_id)
+            )
         if path_data['children']:
-            add_data_paths_to_dm(db, dm_node, path_data['children'], path_node)
+            add_data_paths_to_dm(cur, dm_id, dml_id, path_data['children'], path_id)

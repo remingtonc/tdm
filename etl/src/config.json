@@ -1,7 +1,9 @@
 {
-    "dbms": {
-        "arangoURL": "http://dbms:8529",
-        "username": "root",
+    "postgres": {
+        "host": "postgres",
+        "port": 5432,
+        "dbname": "tdm",
+        "user": "tdm",
         "password": "tdm"
     },
     "search": {
