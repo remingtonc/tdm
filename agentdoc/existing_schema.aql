@@ -1,0 +1,286 @@
+// ============================================================================
+// TDM — Existing ArangoDB Schema (reference document, not an executable script)
+// ============================================================================
+// This documents the schema as expressed in code (etl/src/models.py,
+// etl/src/static.py, etl/src/yang/__init__.py, etl/src/snmp.py,
+// web/src/web/views.py) as of master @ 4eb02d6, 2026-08-25.
+//
+// ArangoDB has no DDL language of its own for defining document/edge shapes —
+// collections are schemaless, and pyArango's `Collection`/`Edges` subclasses
+// in models.py are the closest thing to a schema declaration TDM has (they
+// are *not* enforced: `_validation.on_save = False`, `on_set = False`,
+// `allow_foreign_fields = True`, so ArangoDB accepts any document shape at
+// runtime — the Python classes are documentation/intent, not a constraint).
+//
+// This file is written in AQL-flavored pseudocode: JS-object-literal-like
+// collection creation calls plus the actual index-creation calls (which ARE
+// real, executable pyArango/AQL-equivalent operations), annotated with field
+// notes pulled from the code paths that populate each collection. See
+// agentdoc/current_db_context.md for full narrative context and file/line
+// references.
+// ============================================================================
+
+
+// ----------------------------------------------------------------------------
+// VERTEX (DOCUMENT) COLLECTIONS — 11 total
+// ----------------------------------------------------------------------------
+
+// DataPath — core entity: a single YANG XPath or SNMP OID.
+// _key: ArangoDB auto-generated numeric string (no natural key set on create).
+db._create("DataPath");
+db.DataPath.schema /* documented shape */ = {
+    machine_id:      "string",   // qualified, unique path id. UNIQUE (see index below).
+    human_id:        "string",   // colloquial xpath-style id, NOT guaranteed unique.
+    description:     "string",   // from YANG/SMI 'description' clause.
+    is_leaf:         "bool",     // true if the parsed node had no children.
+    is_variable:     "bool",     // always false at ETL time; never set true anywhere in code.
+    is_configurable: "bool",     // YANG 'config true/false' / SNMP read-write flag.
+    verified:        "bool"      // always false at ETL time; no code path sets it true.
+};
+
+// DataModel — a single YANG module@revision or a compiled SNMP MIB.
+// _key: "<module_name>+<revision>" for YANG; bare MIB name for SNMP.
+db._create("DataModel");
+db.DataModel.schema = {
+    content:         "string|null", // UNUSED — always None in every code path.
+    name:            "string",
+    parsed_checksum: "string|null", // UNUSED — always None in every code path.
+    revision:        "string"       // YANG revision-date string, or MIB version marker.
+};
+
+// DataModelLanguage — the modeling language a DataModel is written in.
+// _key: sanitized name (e.g. "YANG", "SMI", "DME", "CLI").
+db._create("DataModelLanguage");
+db.DataModelLanguage.schema = {
+    name:        "string",
+    description: "string"
+};
+
+// OS — network operating system a DataModel/Release applies to.
+// _key: sanitized name, spaces -> underscores (e.g. "IOS_XE", "IOS_XR", "NX-OS").
+db._create("OS");
+db.OS.schema = {
+    name:        "string",
+    description: "string"
+};
+
+// Release — a version string scoped to one OS.
+// _key: "<OS>+<release>" e.g. "IOS_XE+16.7.1".
+db._create("Release");
+db.Release.schema = {
+    name:        "string",
+    description: "string"
+};
+
+// ControlProtocol — protocol capable of retrieving/manipulating a DataPath.
+// _key: sanitized name (e.g. "gRPC", "NETCONF", "SNMP", "MDT", "CLI", "RESTCONF", "NX-API").
+db._create("ControlProtocol");
+db.ControlProtocol.schema = {
+    name:        "string",
+    description: "string"
+};
+
+// TransportProtocol — transport a ControlProtocol may run over.
+// _key: sanitized name (e.g. "TCP", "UDP", "SSH", "Telnet", "HTTP").
+db._create("TransportProtocol");
+db.TransportProtocol.schema = {
+    name:        "string",
+    description: "string"
+};
+
+// Encoding — wire encoding of data communicated via a ControlProtocol.
+// _key: sanitized name (e.g. "JSON", "XML", "GPB", "KV-GPB", "BER", "Text").
+db._create("Encoding");
+db.Encoding.schema = {
+    name:        "string",
+    description: "string"
+};
+
+// DataType — the declared type of a DataPath's value.
+// _key: "<DataModelLanguage>+<type name>" e.g. "YANG+string".
+db._create("DataType");
+db.DataType.schema = {
+    name:         "string",
+    description:  "string",
+    is_primitive: "bool"   // true for built-in primitives, false for derived/typedef types.
+};
+
+// Device — a physical device that may expose DataModels/DataPaths.
+// DEFINED BUT NEVER POPULATED — no ETL or web code path writes to this collection.
+db._create("Device");
+db.Device.schema = {
+    name:        "string",
+    description: "string"
+};
+
+// Calculation — a user-authored derived-value definition
+// (e.g. "counter A = counter B + counter C"). Created only via the web API
+// (POST handler around web/src/web/views.py:952-982); order of operations is
+// NOT enforced or parsed — 'equation' is free text.
+db._create("Calculation");
+db.Calculation.schema = {
+    name:        "string",
+    description: "string",
+    equation:    "string", // free-text; not parsed/validated/executed.
+    author:      "string"
+};
+
+
+// ----------------------------------------------------------------------------
+// EDGE COLLECTIONS — 20 total. All have implicit `_from`/`_to` (ArangoDB
+// document handles, e.g. "DataPath/12345") plus any extra fields listed.
+// ----------------------------------------------------------------------------
+
+// DeviceHasDataPath — Device -> DataPath. NEVER POPULATED.
+db._createEdgeCollection("DeviceHasDataPath");
+db.DeviceHasDataPath.schema = { os: "string", release: "string" };
+
+// DeviceHasDataModel — Device -> DataModel. NEVER POPULATED.
+db._createEdgeCollection("DeviceHasDataModel");
+db.DeviceHasDataModel.schema = { os: "string", release: "string" };
+
+// OSHasRelease — OS -> Release. Populated by etl/src/static.py.
+db._createEdgeCollection("OSHasRelease");
+db.OSHasRelease.schema = {};
+
+// ReleaseHasDataModel — Release -> DataModel. Populated by etl/src/yang/__init__.py.
+db._createEdgeCollection("ReleaseHasDataModel");
+db.ReleaseHasDataModel.schema = {};
+
+// ReleaseRevision — Release -> Release (previous release -> next release,
+// within the same OS). Populated by etl/src/static.py.
+db._createEdgeCollection("ReleaseRevision");
+db.ReleaseRevision.schema = {};
+
+// DataPathFromDataModel — DataModel -> DataPath (a path is derived from a model).
+// Populated by yang/__init__.py and snmp.py.
+db._createEdgeCollection("DataPathFromDataModel");
+db.DataPathFromDataModel.schema = {
+    parse_timestamp: "unused" // field declared, never actually set to a real value.
+};
+
+// OfDataModelLanguage — DataModelLanguage -> DataModel.
+// Populated by yang/__init__.py and snmp.py.
+db._createEdgeCollection("OfDataModelLanguage");
+db.OfDataModelLanguage.schema = {};
+
+// HasControlProtocol — DataModelLanguage -> ControlProtocol. Populated by static.py.
+db._createEdgeCollection("HasControlProtocol");
+db.HasControlProtocol.schema = {};
+
+// HasEncoding — ControlProtocol -> Encoding. Populated by static.py.
+db._createEdgeCollection("HasEncoding");
+db.HasEncoding.schema = {};
+
+// HasTransportProtocol — ControlProtocol -> TransportProtocol. Populated by static.py.
+db._createEdgeCollection("HasTransportProtocol");
+db.HasTransportProtocol.schema = {};
+
+// DataPathMatch — DataPath <-> DataPath. Logically UNDIRECTED (app code always
+// queries with `ANY`); created only via web UI mapping endpoints
+// (web/src/web/views.py: map_datapath_single, map_datapath_single_by_key).
+// This edge collection (+ Calculation/InCalculation/CalculationResult) is the
+// only *user-curated* data in the whole system — everything else is
+// regenerated wholesale by re-running the ETL.
+db._createEdgeCollection("DataPathMatch");
+db.DataPathMatch.schema = {
+    timestamp:   "number",       // Unix epoch seconds, float (Python time.time()).
+    author:      "string",
+    validated:   "bool",         // whether the match is trustworthy.
+    weight:      "int",          // -1..+inf; -1 means "incongruent" per code comment.
+    annotation:  "string|null",  // free-text human note.
+    needs_human: "bool"          // true = not safe for fully automated consumption.
+};
+
+// DataPathParent — DataPath(child) -> DataPath(parent). Populated by yang/__init__.py.
+db._createEdgeCollection("DataPathParent");
+db.DataPathParent.schema = {};
+
+// DataPathChild — DataPath(parent) -> DataPath(child). Populated by yang/__init__.py.
+// NOTE: stores the exact inverse of DataPathParent as a SEPARATE collection
+// rather than traversing DataPathParent in the opposite direction.
+db._createEdgeCollection("DataPathChild");
+db.DataPathChild.schema = {};
+
+// OfDataType — DataPath -> DataType. Populated by yang/__init__.py.
+db._createEdgeCollection("OfDataType");
+db.OfDataType.schema = {
+    parse_timestamp: "unused" // field declared, never actually set to a real value.
+};
+
+// DataModelChild — DataModel(revision N) -> DataModel(revision N+1).
+// Populated by yang/__init__.py.
+db._createEdgeCollection("DataModelChild");
+db.DataModelChild.schema = {};
+
+// DataModelParent — DataModel(revision N+1) -> DataModel(revision N).
+// Populated by yang/__init__.py. Same inverse-duplication pattern as
+// DataPathParent/DataPathChild above.
+db._createEdgeCollection("DataModelParent");
+db.DataModelParent.schema = {};
+
+// DataModelDerivedFrom — DataModel -> DataModel (e.g. a generated model that
+// derives from a hand-written one). DEFINED BUT NEVER POPULATED.
+db._createEdgeCollection("DataModelDerivedFrom");
+db.DataModelDerivedFrom.schema = {};
+
+// InCalculation — DataPath -> Calculation (path is an input/factor).
+// Populated via web UI calculation-creation endpoint.
+db._createEdgeCollection("InCalculation");
+db.InCalculation.schema = {};
+
+// CalculationResult — Calculation -> DataPath (path is the output/result).
+// Populated via web UI calculation-creation endpoint.
+db._createEdgeCollection("CalculationResult");
+db.CalculationResult.schema = {};
+
+// DataModelLanguageHasDataType — DataModelLanguage -> DataType. Populated by static.py.
+db._createEdgeCollection("DataModelLanguageHasDataType");
+db.DataModelLanguageHasDataType.schema = {};
+
+
+// ----------------------------------------------------------------------------
+// INDEXES — the ONLY indexes explicitly created anywhere in the codebase.
+// Source: etl/src/models.py create_indexes(). All target DataPath.
+// Real, executable AQL/arangosh equivalents below.
+// ----------------------------------------------------------------------------
+
+// The only uniqueness constraint in the entire schema.
+db.DataPath.ensureIndex({
+    type: "skiplist",
+    fields: ["machine_id"],
+    unique: true,
+    sparse: false
+});
+
+// Legacy fulltext indexes (not ArangoSearch views) backing the FULLTEXT() AQL
+// function used by the web app's structured search endpoint.
+db.DataPath.ensureIndex({ type: "fulltext", fields: ["machine_id"] });
+db.DataPath.ensureIndex({ type: "fulltext", fields: ["human_id"] });
+db.DataPath.ensureIndex({ type: "fulltext", fields: ["description"] });
+
+// No other collection — vertex or edge — has any explicit index beyond
+// ArangoDB's automatic primary-key (_key) index and, for edge collections,
+// the automatic _from/_to edge index. Every `FILTER x._from == y._id` join
+// in web/src/web/views.py relies entirely on that automatic edge index.
+
+
+// ----------------------------------------------------------------------------
+// RELATIONSHIP SUMMARY (cardinality, as actually populated)
+// ----------------------------------------------------------------------------
+// OS                 1 --- N   Release              (OSHasRelease)
+// Release            1 --- 1   Release (next rev)    (ReleaseRevision, chain)
+// Release            1 --- N   DataModel             (ReleaseHasDataModel)
+// DataModelLanguage  1 --- N   DataModel             (OfDataModelLanguage)
+// DataModelLanguage  1 --- N   ControlProtocol       (HasControlProtocol)
+// DataModelLanguage  1 --- N   DataType              (DataModelLanguageHasDataType)
+// ControlProtocol    1 --- N   Encoding              (HasEncoding)
+// ControlProtocol    1 --- N   TransportProtocol     (HasTransportProtocol)
+// DataModel          1 --- N   DataPath              (DataPathFromDataModel)
+// DataModel          1 --- 1   DataModel (next rev)   (DataModelChild/Parent, chain)
+// DataPath           1 --- 1   DataPath (parent)      (DataPathParent/Child, tree)
+// DataPath           1 --- 1   DataType               (OfDataType)
+// DataPath           M --- N   DataPath (equivalence) (DataPathMatch, undirected)
+// DataPath           M --- N   Calculation            (InCalculation / CalculationResult)
+// Device             — unused —
+// ----------------------------------------------------------------------------
