@@ -1,6 +1,6 @@
-FROM node:alpine
+FROM node:20-alpine
 WORKDIR /data/
-RUN yarn global add vuepress@next
+RUN yarn global add vuepress@1.2.0
 COPY package.json package.json
 COPY docs/ docs/
 ENTRYPOINT [ "yarn" ]

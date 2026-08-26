@@ -1,4 +1,4 @@
-FROM python:3-alpine
+FROM python:3.7-alpine
 WORKDIR /data/
 RUN pip install --no-cache-dir pip==18.0
 RUN pip install --no-cache-dir pipenv
