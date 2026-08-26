@@ -45,7 +45,7 @@ Once MIBs and YANG models (we should multithread that) are loaded into ArangoDB 
 ## Directory Structure
 
 ### Cache
-`cache/` is a mounted volume via Docker to aid in debugging of the ETL process.
+`cache/` is a mounted volume via Podman to aid in debugging of the ETL process.
 
 * `cache/extract` <-> `/data/extract`
 * `cache/transform` <-> `/data/transform`

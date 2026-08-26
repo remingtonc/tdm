@@ -38,38 +38,38 @@ This has only been lightly evaluated, but we recommend:
 These specifications are also semi-dependent on the expected load levels.
 
 ### Prerequisites
-* [Docker CE](https://docs.docker.com/install/) (don't you love it when everything is simplified).
-  * There are DockerHub/external dependencies, so proxy settings must be configured [in the Docker daemon](https://docs.docker.com/network/proxy/) and some Dockerfiles if necessary. This is not already handled, and an issue should be opened for assistance if required.
-* [docker-compose](https://docs.docker.com/compose/install/) for deployment. Docker Swarm support has been deprecated to support ElasticSearch provisioning. Docker Swarm [does not support](https://github.com/moby/moby/issues/25209) the required `ulimit` settings.
+* [Podman](https://podman.io/docs/installation) (don't you love it when everything is simplified).
+  * There are DockerHub/external dependencies, so proxy settings must be configured [in Podman](https://docs.podman.io/en/latest/markdown/podman.1.html) and some Containerfiles if necessary. This is not already handled, and an issue should be opened for assistance if required.
+* [podman-compose](https://github.com/containers/podman-compose#installation) for deployment. Docker Swarm support has been deprecated to support ElasticSearch provisioning. Docker Swarm [does not support](https://github.com/moby/moby/issues/25209) the required `ulimit` settings.
 * Unix-like environment, `bash` et al. support.
 
 ### Commands
-* `setup.sh` to install `docker-compose` for your user.
-* `start.sh [http|https]` to start the Docker stack.
-* `stop.sh [http|https]` to stop the Docker stack.
-* `reset.sh [http|https]` to stop the Docker stack and delete the persisted storage volumes.
+* `setup.sh` to install `podman-compose` for your user.
+* `start.sh [http|https]` to start the Podman stack.
+* `stop.sh [http|https]` to stop the Podman stack.
+* `reset.sh [http|https]` to stop the Podman stack and delete the persisted storage volumes.
 
 
 ### Installation
-Ensure there are no port conflicts or change the forwarded ports in `docker-compose*.yml`.
+Ensure there are no port conflicts or change the forwarded ports in `compose*.yaml`.
 
 ```bash
 git clone https://www.github.com/cisco-ie/tdm.git
-# If docker-compose is not installed...
+# If podman-compose is not installed...
 ./setup.sh
 # Start the stack!
 ./start.sh [http|https]
 # You're good to go :)
 # To monitor ETL process...
-docker logs -f tdm_etl_1
+podman logs -f tdm_etl_1
 ```
 
-Once the containers are built and running, it currently takes ~8 hours for all the data to be fully parsed and TDM to be fully available. Progress is visible through the `etl` Docker container logs, usually easily accessible via `docker logs -f tdm_etl_1`. Once the `etl` container has died, TDM is loaded with the current snapshot of data available. Unfortunately there is not a recurring ETL process at this time.
+Once the containers are built and running, it currently takes ~8 hours for all the data to be fully parsed and TDM to be fully available. Progress is visible through the `etl` container logs, usually easily accessible via `podman logs -f tdm_etl_1`. Once the `etl` container has died, TDM is loaded with the current snapshot of data available. Unfortunately there is not a recurring ETL process at this time.
 
-If deploying with HTTPS, an SSL `.crt` and `.key` must be placed under `nginx/` as `tdm.cisco.com.crt` and `tdm.cisco.com.key` respectively. Usage of a different filename requires changing these filenames in `docker-compose.https.yml` and `nginx/nginx.https.conf`. This allows components to run over plain HTTP and have NGINX proxy the encryption of public web traffic - which is wonderfully useful for now albeit not as inherently secure.
+If deploying with HTTPS, an SSL `.crt` and `.key` must be placed under `nginx/` as `tdm.cisco.com.crt` and `tdm.cisco.com.key` respectively. Usage of a different filename requires changing these filenames in `compose.https.yaml` and `nginx/nginx.https.conf`. This allows components to run over plain HTTP and have NGINX proxy the encryption of public web traffic - which is wonderfully useful for now albeit not as inherently secure.
 
 ### Access
-All ports will be exposed on your Docker host interface. Typically you don't need to worry what this is, assume everything will be available from `127.0.0.1`/`localhost`.
+All ports will be exposed on your Podman host interface. Typically you don't need to worry what this is, assume everything will be available from `127.0.0.1`/`localhost`.
 
 * Port `80` (HTTP) or `443` (HTTPS) exposes the TDM Web UI.
   * `/goaccess_web.html` exposes website access statistics.

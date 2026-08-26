@@ -140,7 +140,7 @@ Per `doc/docs/dev/architecture/Search.md`: **ArangoDB is the sole source of trut
 
 ## 8. Config / connection details
 
-`docker-compose.yml`:
+`compose.yaml`:
 ```yaml
 dbms:
   image: arangodb/arangodb:latest
@@ -153,10 +153,10 @@ dbms:
 ```
 
 - No `ARANGO_NO_AUTH`, no separate app-level DB user — both ETL and web authenticate as `root`/`tdm`.
-- Port 8529 isn't published directly by the `dbms` service; `nginx` reverse-proxies host port 8529 → `dbms:8529` (same in `docker-compose.https.yml`, which only adds TLS).
+- Port 8529 isn't published directly by the `dbms` service; `nginx` reverse-proxies host port 8529 → `dbms:8529` (same in `compose.https.yaml`, which only adds TLS).
 - **No `.env` file, no environment-variable-based configuration anywhere** — connection details are hardcoded literals in three independent places: `etl/src/config.json`, `web/src/web/views.py` (constant + 5 call sites), `etl/src/snmp.py:211`.
-- Storage: named Docker volume `dbms_storage` at `/var/lib/arangodb3` (Arango's default data directory).
-- `reset.sh`/`stop.sh` run `docker-compose down --rmi all --volumes` — a "reset" wipes the Arango data volume entirely; the only backup mechanism is the web app's `/api/v1/map/dump/*` routes, which export only `DataPathMatch`/`Calculation`, not the full DB.
+- Storage: named Podman volume `dbms_storage` at `/var/lib/arangodb3` (Arango's default data directory).
+- `reset.sh`/`stop.sh` run `podman-compose down --rmi all --volumes` — a "reset" wipes the Arango data volume entirely; the only backup mechanism is the web app's `/api/v1/map/dump/*` routes, which export only `DataPathMatch`/`Calculation`, not the full DB.
 
 ## 9. `migrate/1_to_2/` context
 
@@ -168,7 +168,7 @@ Not a database-engine migration — a one-time offline data-format migration for
 
 ## 10. ArangoDB version
 
-- **No version is pinned anywhere in the repo** — `docker-compose.yml` specifies `arangodb/arangodb:latest`, so the actual deployed version depends on whatever `latest` resolved to at deploy time. Confirm the real version against a running instance (`db._version()` or the web UI About page) before finalizing type/behavior mappings.
+- **No version is pinned anywhere in the repo** — `compose.yaml` specifies `arangodb/arangodb:latest`, so the actual deployed version depends on whatever `latest` resolved to at deploy time. Confirm the real version against a running instance (`db._version()` or the web UI About page) before finalizing type/behavior mappings.
 - Code targets ArangoDB 3.x specifically:
   - Explicit `WITH <collection>, ...` declarations (required in 3.x cluster mode)
   - 3.x-style multi-collection traversal syntax (`FOR v, e, p IN n..m OUTBOUND/INBOUND/ANY start edgeCol1, edgeCol2, ...`)

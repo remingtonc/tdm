@@ -24,14 +24,14 @@ esac
 COMPOSE_FILE=""
 case "$1" in
     ""|"http")
-        COMPOSE_FILE=docker-compose.yml
+        COMPOSE_FILE=compose.yaml
         ;;
     "https")
-        COMPOSE_FILE=docker-compose.https.yml
+        COMPOSE_FILE=compose.https.yaml
         ;;
     *)
         echo $"Usage: $0 [http|https]"
         exit 1
         ;;
 esac
-docker-compose -f $COMPOSE_FILE up -d --build
+podman-compose -f $COMPOSE_FILE up -d --build
