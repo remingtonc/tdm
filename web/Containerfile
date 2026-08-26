@@ -1,7 +1,7 @@
-FROM python:3.7-alpine
+FROM python:3.6-alpine
 WORKDIR /data/
 RUN pip install --no-cache-dir pip==18.0
-RUN pip install --no-cache-dir pipenv
+RUN pip install --no-cache-dir pipenv==2018.11.26
 COPY src/Pipfile Pipfile
 RUN apk add --no-cache --virtual .build-deps gcc file make musl-dev libffi-dev libevent-dev
 RUN pipenv --three install
