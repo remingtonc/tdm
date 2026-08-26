@@ -11,4 +11,4 @@ case "$1" in
         echo $"Usage: $0 [http|https]"
         exit 1
 esac
-podman-compose -f $COMPOSE_FILE down --rmi all --volumes
+podman compose -f $COMPOSE_FILE down --rmi all --volumes

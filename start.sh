@@ -34,4 +34,4 @@ case "$1" in
         exit 1
         ;;
 esac
-podman-compose -f $COMPOSE_FILE up -d --build
+podman compose -f $COMPOSE_FILE up -d --build

@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-pip install --user podman-compose
+pip install --user podman compose

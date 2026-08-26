@@ -4,7 +4,7 @@ RUN apk add --update git gcc libc-dev libxslt-dev libpq-dev
 RUN pip install --no-cache-dir pipenv==2018.11.26
 WORKDIR /data/
 COPY src/Pipfile Pipfile
-RUN pipenv --three install
+RUN pipenv --python 3.6 install
 COPY src/ .
 ENTRYPOINT [ "pipenv", "run" ]
 CMD [ "python", "main.py" ]

@@ -69,8 +69,13 @@
 --        the `_key` value (same string, just not artificially separated
 --        into its own column) — so making it UNIQUE captures the identical
 --        constraint a `slug` column would, without storing the value twice.
+-- 9. Everything lives in a `tdm` schema, not `public`, so the database can
+--    host other apps' schemas alongside this one without name collisions.
+--    The ETL connects with search_path=tdm, so unqualified table references
+--    throughout etl/src/*.py resolve here without further changes.
 -- =============================================================================
 
+CREATE SCHEMA IF NOT EXISTS tdm;
 
 -- -----------------------------------------------------------------------------
 -- LOOKUP / REFERENCE TABLES

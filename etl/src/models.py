@@ -20,7 +20,7 @@ SCHEMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'schema.s
 def schema_exists(conn):
     """Check whether the schema has already been created."""
     with conn.cursor() as cur:
-        cur.execute("SELECT to_regclass('public.os')")
+        cur.execute("SELECT to_regclass('tdm.os')")
         return cur.fetchone()[0] is not None
 
 def create_schema(conn):

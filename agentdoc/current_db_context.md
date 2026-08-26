@@ -156,7 +156,7 @@ dbms:
 - Port 8529 isn't published directly by the `dbms` service; `nginx` reverse-proxies host port 8529 → `dbms:8529` (same in `compose.https.yaml`, which only adds TLS).
 - **No `.env` file, no environment-variable-based configuration anywhere** — connection details are hardcoded literals in three independent places: `etl/src/config.json`, `web/src/web/views.py` (constant + 5 call sites), `etl/src/snmp.py:211`.
 - Storage: named Podman volume `dbms_storage` at `/var/lib/arangodb3` (Arango's default data directory).
-- `reset.sh`/`stop.sh` run `podman-compose down --rmi all --volumes` — a "reset" wipes the Arango data volume entirely; the only backup mechanism is the web app's `/api/v1/map/dump/*` routes, which export only `DataPathMatch`/`Calculation`, not the full DB.
+- `reset.sh`/`stop.sh` run `podman compose down --rmi all --volumes` — a "reset" wipes the Arango data volume entirely; the only backup mechanism is the web app's `/api/v1/map/dump/*` routes, which export only `DataPathMatch`/`Calculation`, not the full DB.
 
 ## 9. `migrate/1_to_2/` context
 

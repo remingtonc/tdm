@@ -6,7 +6,7 @@ name = "pypi"
 [packages]
 psycopg2-binary = "==2.8.6"
 pyang = "==1.7.5"
-pysmi = "*"
+pysmi = "==0.3.4"
 elasticsearch = "*"
 
 [dev-packages]

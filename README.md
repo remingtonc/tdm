@@ -40,11 +40,11 @@ These specifications are also semi-dependent on the expected load levels.
 ### Prerequisites
 * [Podman](https://podman.io/docs/installation) (don't you love it when everything is simplified).
   * There are DockerHub/external dependencies, so proxy settings must be configured [in Podman](https://docs.podman.io/en/latest/markdown/podman.1.html) and some Containerfiles if necessary. This is not already handled, and an issue should be opened for assistance if required.
-* [podman-compose](https://github.com/containers/podman-compose#installation) for deployment. Docker Swarm support has been deprecated to support ElasticSearch provisioning. Docker Swarm [does not support](https://github.com/moby/moby/issues/25209) the required `ulimit` settings.
+* [podman compose](https://github.com/containers/podman compose#installation) for deployment. Docker Swarm support has been deprecated to support ElasticSearch provisioning. Docker Swarm [does not support](https://github.com/moby/moby/issues/25209) the required `ulimit` settings.
 * Unix-like environment, `bash` et al. support.
 
 ### Commands
-* `setup.sh` to install `podman-compose` for your user.
+* `setup.sh` to install `podman compose` for your user.
 * `start.sh [http|https]` to start the Podman stack.
 * `stop.sh [http|https]` to stop the Podman stack.
 * `reset.sh [http|https]` to stop the Podman stack and delete the persisted storage volumes.
@@ -55,7 +55,7 @@ Ensure there are no port conflicts or change the forwarded ports in `compose*.ya
 
 ```bash
 git clone https://www.github.com/cisco-ie/tdm.git
-# If podman-compose is not installed...
+# If podman compose is not installed...
 ./setup.sh
 # Start the stack!
 ./start.sh [http|https]

@@ -65,7 +65,8 @@ def connect(pg_config):
                 port=pg_config['port'],
                 dbname=pg_config['dbname'],
                 user=pg_config['user'],
-                password=pg_config['password']
+                password=pg_config['password'],
+                options='-c search_path=tdm'
             )
         except psycopg2.OperationalError:
             time.sleep(3)

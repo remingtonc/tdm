@@ -1,6 +1,11 @@
 -- TDM PostgreSQL schema. Executed once by models.create_schema() on first run.
 -- Full design rationale for every decision below lives in agentdoc/new_schema.sql
 -- (this file is the runtime copy the ETL actually executes).
+-- Lives outside `public` so it can coexist with other apps in the same database;
+-- the connection's search_path (set in main.connect()) points unqualified
+-- table references here.
+
+CREATE SCHEMA IF NOT EXISTS tdm;
 
 CREATE TABLE os (
     os_id       BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
