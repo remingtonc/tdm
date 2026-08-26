@@ -5,6 +5,7 @@ networks:
 
 volumes:
   dbms_storage:
+  postgres_storage:
   nginx_logs:
   goaccess_report:
   search_storage:
@@ -23,6 +24,23 @@ services:
       - "8529"
     environment:
       - ARANGO_ROOT_PASSWORD=tdm
+    networks:
+      - backend
+  postgres:
+    image: postgres:16-alpine
+    volumes:
+      - type: volume
+        source: postgres_storage
+        target: /var/lib/postgresql/data
+    ports:
+      - target: 5432
+        published: 5432
+        protocol: tcp
+        mode: host
+    environment:
+      - POSTGRES_USER=tdm
+      - POSTGRES_PASSWORD=tdm
+      - POSTGRES_DB=tdm
     networks:
       - backend
   etl:
