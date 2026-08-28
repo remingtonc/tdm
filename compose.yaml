@@ -29,7 +29,7 @@ services:
     volumes:
       - type: volume
         source: postgres_storage
-        target: /var/lib/postgresql/data
+        target: /var/lib/postgresql
     ports:
       - target: 5432
         published: 5432
