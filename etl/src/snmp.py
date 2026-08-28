@@ -17,7 +17,6 @@ import os
 import sys
 import json
 import shutil
-from concurrent.futures import ProcessPoolExecutor
 from pysmi.reader import FileReader
 from pysmi.searcher import AnyFileSearcher, StubSearcher
 from pysmi.writer import FileWriter
@@ -61,56 +60,6 @@ def resolve_base_type(type_name, type_index, _seen=None):
     if not parent_name:
         return None
     return resolve_base_type(parent_name, type_index, _seen)
-
-
-def create_oid_dict(oid_data, type_index):
-    oid = {}
-    oidname = oid_data['oid']
-    oid[oidname] = {}
-    oid[oidname]['oid'] = oid_data['oid']
-    oid[oidname]['name'] = oid_data['name']
-    if ('description') in oid_data:
-        oid[oidname]["description"] = oid_data['description']
-    else:
-        oid[oidname]["description"] = ''
-
-    if ('syntax') in oid_data:
-        oid[oidname]['dataType'] = oid_data['syntax']['type']
-        oid[oidname]['dataTypeBase'] = resolve_base_type(
-            oid_data['syntax']['type'], type_index
-        ) or ''
-    else:
-        oid[oidname]['dataType'] = ''
-        oid[oidname]['dataTypeBase'] = ''
-    return oid
-
-
-# Populated once per worker process by _init_json_transform_worker, so
-# transform_json_to_new's ProcessPoolExecutor doesn't repickle type_index
-# (built from every compiled MIB) on every one of the ~1600 per-file tasks.
-_worker_local_json_dir = None
-_worker_new_json_dir = None
-_worker_type_index = None
-
-
-def _init_json_transform_worker(local_json_dir, new_json_dir, type_index):
-    global _worker_local_json_dir, _worker_new_json_dir, _worker_type_index
-    _worker_local_json_dir = local_json_dir
-    _worker_new_json_dir = new_json_dir
-    _worker_type_index = type_index
-
-
-def _transform_one_json(filename):
-    file_path = os.path.join(_worker_local_json_dir, filename)
-    with open(file_path, 'r', encoding='utf8') as f:
-        data = json.load(f)
-    newdict = {}
-    for i in data:
-        if ('oid') in data[i]:
-            newdict.update(create_oid_dict(data[i], _worker_type_index))
-    new_file_path = os.path.join(_worker_new_json_dir, filename)
-    with open(new_file_path, 'w') as f:
-        json.dump(newdict, f, indent=4)
 
 
 class SNMPPopulator:
@@ -278,17 +227,45 @@ class SNMPPopulator:
         else:
             json_names = specific_mibs.copy()
         num_json = len(json_names)
+        counter = 1
         logging.debug('%i JSON to transform.', num_json)
         if not os.path.isdir(self.new_json_dir):
             os.makedirs(self.new_json_dir)
         type_index = self.build_type_index()
-        with ProcessPoolExecutor(
-            initializer=_init_json_transform_worker,
-            initargs=(self.local_json_dir, self.new_json_dir, type_index)
-        ) as pool:
-            for counter, _ in enumerate(pool.map(_transform_one_json, json_names), start=1):
-                logging.debug('JSON %i/%i transformed.', counter, num_json)
+        for filename in json_names:
+            file_path = os.path.join(self.local_json_dir, filename)
+            logging.debug('JSON %i/%i: %s', counter, num_json, filename)
+            with open(file_path, 'r', encoding='utf8') as f:
+                data = json.load(f)
+                def create_oid_dict(oid_data):
+                    oid = {}
+                    oidname = oid_data['oid']
+                    oid[oidname] = {}
+                    oid[oidname]['oid'] = oid_data['oid']
+                    oid[oidname]['name'] = oid_data['name']
+                    if ('description') in oid_data:
+                        oid[oidname]["description"] = oid_data['description']
+                    else:
+                        oid[oidname]["description"] = ''
 
+                    if ('syntax') in oid_data:
+                        oid[oidname]['dataType'] = oid_data['syntax']['type']
+                        oid[oidname]['dataTypeBase'] = resolve_base_type(
+                            oid_data['syntax']['type'], type_index
+                        ) or ''
+                    else:
+                        oid[oidname]['dataType'] = ''
+                        oid[oidname]['dataTypeBase'] = ''
+                    return oid
+                newdict = {}
+                for i in data:
+                    if ('oid') in data[i]:
+                        newdict.update(create_oid_dict(data[i]))
+                new_file_path = os.path.join(self.new_json_dir, filename)
+                with open(new_file_path, 'w') as f:
+                    json.dump(newdict, f, indent=4)
+            counter += 1
+        
     def resolve_data_type_id(self, cur, dml_id, base_type_name, dt_cache):
         """Look up the data_type row for a resolved RFC2578 base type name.
         Returns None (and does not create anything) if it isn't already
