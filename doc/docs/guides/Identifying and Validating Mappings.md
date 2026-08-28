@@ -106,7 +106,7 @@ Fortunately, `net-snmp` itself is very easy to install. It is effectively a stan
 
 Unfortunately, `net-snmp` does not always come with the latest standard MIBs by default. On Debian/Ubuntu we can use `apt install snmp-mibs-downloader` to download several industry standard MIBs. For other distributions, you will have to do some searching and validation that your MIBs are the latest.
 
-To use Cisco's MIBs, we first need to acquire them. Cisco has a mirror of SNMP-related information at `ftp://ftp.cisco.com/`. We will very specifically download the v2 MIBs located at `ftp://ftp.cisco.com/pub/mibs/v2/` - if you don't know what this means then you will likely be okay with just this set. An example for Debian/Ubuntu, `wget --mirror --no-host-directories --cut-dirs=3 --directory-prefix=/usr/share/snmp/mibs/ --wait=1 ftp://ftp.cisco.com/pub/mibs/v2/`. This may take some time.
+To use Cisco's MIBs, we first need to acquire them. Cisco publishes its MIBs at the [`cisco/cisco-mibs`](https://github.com/cisco/cisco-mibs) GitHub repository. We will very specifically use the v2 MIBs located in the [`v2/`](https://github.com/cisco/cisco-mibs/tree/main/v2) directory - if you don't know what this means then you will likely be okay with just this set. An example for Debian/Ubuntu, `git clone --depth 1 https://github.com/cisco/cisco-mibs.git && cp cisco-mibs/v2/*.my /usr/share/snmp/mibs/`. This may take some time.
 
 
 #### Example
