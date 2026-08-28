@@ -96,8 +96,8 @@ os_version_folder_map = {
 # TODO: Create common functionality for this mapping.
 os_map = {
     'nx': 'NX-OS',
-    'xe': 'IOS_XE',
-    'xr': 'IOS_XR'
+    'xe': 'IOS XE',
+    'xr': 'IOS XR'
 }
 
 def acquire_source():
