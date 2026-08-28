@@ -14,7 +14,8 @@ limitations under the License.
 """
 """Load YANG models in to the database representation
 of OS/Releases/DataModels/DataPaths/DataTypes. Heavy parsing.
-Extremely non-optimal. ~10GB memory usage.
+Streams one version at a time (see YANGBase.parse_versions) so a whole
+OS's parsed data is never held in memory at once.
 """
 import os
 import json
@@ -118,12 +119,13 @@ def acquire_source():
         logging.debug('Cloned to %s.', yang_base_path)
     return cisco_yang_base_path
 
-# TODO: Optimize the caches.
+# dm_cache dedupes data_model INSERTs (unique on name+revision, no ON CONFLICT
+# handling) and dt_cache is a small read cache over the fixed data_type table.
+# data_path and data_path_source dedup is handled DB-side via ON CONFLICT
+# instead of Python-side caches (formerly dp_cache/dm_dp_cache) -- see
+# add_data_paths_to_dm.
 dm_cache = {}
-dp_cache = {}
 dt_cache = {}
-# This is the most memory inefficient thing I've ever done.
-dm_dp_cache = set()
 
 def get_release_id(cur, os_name, release_name):
     cur.execute(
@@ -148,12 +150,8 @@ def populate_yang(conn):
     dml_id = cur.fetchone()[0]
     for os_key, version_map in os_version_folder_map.items():
         logging.info('Transforming %s data.', os_map[os_key])
-        versioned_data = YANGBase(
-            base_model_path,
-            os_key,
-            version_map
-        ).parse_versions()
-        for version, modules in versioned_data.items():
+        yang_base = YANGBase(base_model_path, os_key, version_map)
+        for version, modules in yang_base.parse_versions():
             logging.info('Loading %s %s data.', os_map[os_key], version)
             release_id = get_release_id(cur, os_map[os_key], version)
             add_version_modules(conn, cur, dml_id, release_id, modules)
@@ -184,32 +182,45 @@ def add_version_modules(conn, cur, dml_id, release_id, modules):
     conn.commit()
 
 def add_data_paths_to_dm(cur, dm_id, dml_id, module, dp_parent_id=None):
-    """Add the parsed DataPaths from the corresponding DataModels."""
+    """Add the parsed DataPaths from the corresponding DataModels.
+    data_path is deduped DB-side on the machine_id UNIQUE constraint: ON
+    CONFLICT DO UPDATE overwrites the mutable columns with the incoming
+    row's values, so whichever revision is processed LAST wins. Callers
+    (add_version_modules's sorted(revisions.keys()) loop, and
+    os_version_folder_map's oldest-to-newest version ordering) already
+    guarantee revisions are processed oldest-to-newest, so "last processed"
+    means "most recent revision" -- matching the data_type_id UPDATE below,
+    which has always been last-write-wins. data_path_source is deduped the
+    same way it always was, via its own ON CONFLICT DO NOTHING on the
+    (data_path_id, data_model_id) primary key.
+    """
     for _, path_data in module.items():
         path_key = path_data['machine_id']
-        path_id = dp_cache.get(path_key)
-        if path_id is None:
-            cur.execute(
-                'INSERT INTO data_path (machine_id, human_id, description, is_leaf, is_configurable, parent_id) '
-                'VALUES (%s, %s, %s, %s, %s, %s) RETURNING data_path_id',
-                (
-                    path_key,
-                    path_data['xpath'],
-                    path_data['description'],
-                    False if path_data['children'] else True,
-                    path_data['rw'],
-                    dp_parent_id
-                )
+        cur.execute(
+            'INSERT INTO data_path (machine_id, human_id, description, is_leaf, is_configurable, parent_id) '
+            'VALUES (%s, %s, %s, %s, %s, %s) '
+            'ON CONFLICT (machine_id) DO UPDATE SET '
+            'human_id = EXCLUDED.human_id, '
+            'description = EXCLUDED.description, '
+            'is_leaf = EXCLUDED.is_leaf, '
+            'is_configurable = EXCLUDED.is_configurable, '
+            'parent_id = EXCLUDED.parent_id '
+            'RETURNING data_path_id',
+            (
+                path_key,
+                path_data['xpath'],
+                path_data['description'],
+                False if path_data['children'] else True,
+                path_data['rw'],
+                dp_parent_id
             )
-            path_id = cur.fetchone()[0]
-            dp_cache[path_key] = path_id
-        if (dm_id, path_id) not in dm_dp_cache:
-            cur.execute(
-                'INSERT INTO data_path_source (data_path_id, data_model_id) VALUES (%s, %s) '
-                'ON CONFLICT DO NOTHING',
-                (path_id, dm_id)
-            )
-            dm_dp_cache.add((dm_id, path_id))
+        )
+        path_id = cur.fetchone()[0]
+        cur.execute(
+            'INSERT INTO data_path_source (data_path_id, data_model_id) VALUES (%s, %s) '
+            'ON CONFLICT DO NOTHING',
+            (path_id, dm_id)
+        )
         if path_data['primitive_type'] is not None:
             type_key = 'YANG+%s' % path_data['primitive_type']
             type_id = dt_cache.get(type_key)

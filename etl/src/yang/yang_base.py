@@ -52,10 +52,14 @@ class YANGBase:
         return version_path
 
     def parse_versions(self):
-        """Parse all the Releases and their corresponding DataModels."""
-        version_module_map = {}
+        """Parse each Release and its corresponding DataModels, one version at a
+        time. Yields (version, version_data) as soon as each version is parsed,
+        instead of building the whole OS's data in memory, so the caller can
+        write a version to the DB and let it be garbage collected before the
+        next version is parsed.
+        """
         for version, version_path in self.version_path_map.items():
-            version_data = version_module_map[version] = {}
+            version_data = {}
             modules = yang_parser.parse_repository(version_path)
             logging.info('Found %d module(s) for %s.', len(modules.keys()), version)
             for module_key, module_revision in modules.items():
@@ -64,8 +68,7 @@ class YANGBase:
                     module_data[revision_key] = self.parse_module_oper_attrs(module)
                 logging.debug('Parsed %d revision(s) for %s.', len(module_data.keys()), module_key)
             logging.debug('Parsed %d module(s) for %s.', len(version_data.keys()), version)
-        logging.debug('Parsed %d version(s).', len(version_module_map.keys()))
-        return version_module_map
+            yield version, version_data
 
     def parse_module_oper_attrs(self, module):
         """Parse out the readable DataPaths from parsed data models.
