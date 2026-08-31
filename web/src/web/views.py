@@ -14,7 +14,6 @@ limitations under the License.
 """
 import json
 import csv
-import time
 import io
 from collections import OrderedDict
 import flask
@@ -739,7 +738,8 @@ def api_datapath_from_arbitrary_id():
 
 @app.route('/api/v1/map/datapath/bulk', methods=['POST'])
 def api_map_bulk():
-    """Expects CSV with columns _from and _to.
+    """Expects CSV with columns 'First DataPath', 'Second DataPath', 'Author',
+    'Annotation' -- the same format produced by /api/v1/map/dump/csv.
     """
     mappings_file = None
     if not flask.request.files:
@@ -757,14 +757,15 @@ def api_map_bulk():
     elif not allowed_file(secure_filename(mappings_file.filename)):
         return 'File appears insecure and not allowed!', 400
     bulk_results = {'success': [], 'fail': []}
-    with open(mappings_file.save()) as bulk_fd:
-        bulk_csv = csv.DictReader(bulk_fd)
-        for row in bulk_csv:
-            try:
-                map_datapath_single(row['First DataPath'], row['Second DataPath'], row['Author'], row['Annotation'])
-                bulk_results['success'] += [[row['_from'], row['_to']]]
-            except Exception:
-                bulk_results['fail'] += [[row['_from'], row['_to']]]
+    bulk_fd = io.TextIOWrapper(mappings_file.stream, encoding='utf-8')
+    bulk_csv = csv.DictReader(bulk_fd)
+    for row in bulk_csv:
+        pair = [row['First DataPath'], row['Second DataPath']]
+        try:
+            map_datapath_single(row['First DataPath'], row['Second DataPath'], row['Author'], row['Annotation'])
+            bulk_results['success'].append(pair)
+        except Exception:
+            bulk_results['fail'].append(pair)
     return flask.jsonify(bulk_results)
 
 def allowed_file(filename):
@@ -822,64 +823,42 @@ def api_map_load_native():
     return flask.jsonify(failures)
 
 def map_datapath_calculation_single(name, description, equation, author, InCalculation, CalculationResult):
-    in_calculation_ids = set()
-    calculation_result_ids = set()
-    check_fields = ['machine_id', 'human_id']
-    for in_calc in InCalculation:
-        in_calc_doc = check_collection_fields('DataPath', check_fields, in_calc)
-        if in_calc_doc is not None:
-            in_calculation_ids.add(in_calc_doc.next()['_id'])
-    for calc_result in CalculationResult:
-        calc_result_doc = check_collection_fields('DataPath', check_fields, calc_result)
-        if calc_result_doc is not None:
-            calculation_result_ids.add(calc_result_doc.next()['_id'])
-    client = ArangoClient(hosts='http://dbms:{}'.format(ARANGO_PORT))
-    db = client.db('tdm', username='root', password='tdm')
-    calculation_collection = db.collection('Calculation')
-    calculation_exists = calculation_collection.find({'name': name})
-    if calculation_exists.count() > 0:
-        raise Exception('Calculation of name %s already exists!' % name)
-    app.logger.debug('Adding calculation %s', name)
-    calc_doc = calculation_collection.insert(
-        {
-            'name': name,
-            'description': description,
-            'equation': equation,
-            'author': author
-        }
-    )
-    for dp_id in in_calculation_ids:
-        add_mapping('InCalculation', dp_id, calc_doc['_id'])
-    for dp_id in calculation_result_ids:
-        add_mapping('CalculationResult', calc_doc['_id'], dp_id)
+    with db.cursor() as cur:
+        in_calculation_ids = {resolve_data_path_id(cur, dp) for dp in InCalculation}
+        calculation_result_ids = {resolve_data_path_id(cur, dp) for dp in CalculationResult}
+        # calculation.name has no UNIQUE constraint to rely on instead.
+        cur.execute('SELECT 1 FROM calculation WHERE name = %s', (name,))
+        if cur.fetchone() is not None:
+            raise Exception('Calculation of name %s already exists!' % name)
+        app.logger.debug('Adding calculation %s', name)
+        cur.execute("""
+            INSERT INTO calculation (name, description, equation, author)
+            VALUES (%s, %s, %s, %s)
+            RETURNING calculation_id
+        """, (name, description, equation, author))
+        calculation_id = cur.fetchone()['calculation_id']
+        for dp_id in in_calculation_ids:
+            cur.execute(
+                'INSERT INTO calculation_input (data_path_id, calculation_id) VALUES (%s, %s)',
+                (dp_id, calculation_id)
+            )
+        for dp_id in calculation_result_ids:
+            cur.execute(
+                'INSERT INTO calculation_result (calculation_id, data_path_id) VALUES (%s, %s)',
+                (calculation_id, dp_id)
+            )
 
 def map_datapath_single(_from, _to, author, annotation, timestamp=None, validated=False, weight=0, needs_human=True):
-    dp_one_id = None
-    dp_two_id = None
-    check_fields = ['machine_id', 'human_id']
-    dp_one_doc = check_collection_fields('DataPath', check_fields, _from)
-    if dp_one_doc is not None:
-        dp_one_id = dp_one_doc.next()['_id']
-    dp_two_doc = check_collection_fields('DataPath', check_fields, _to)
-    if dp_two_doc is not None:
-        dp_two_id = dp_two_doc.next()['_id']
-    if dp_one_id is None or dp_two_id is None:
-        exception_messages = []
-        if dp_one_id is None:
-            exception_messages.append('Could not find %s!' % _from)
-        if dp_two_id is None:
-            exception_messages.append('Could not find %s!' % _to)
-        raise Exception(' '.join(exception_messages))
-    match_body = {
-        'timestamp': timestamp or time.time(),
-        'author': author,
-        'validated': validated,
-        'weight': weight,
-        'annotation': annotation,
-        'needs_human': needs_human or True if annotation else False
-    }
-    app.logger.debug('Mapping %s <-> %s', _from, _to)
-    add_mapping('DataPathMatch', dp_one_id, dp_two_id, match_body)
+    with db.cursor() as cur:
+        dp_one_id = resolve_data_path_id(cur, _from)
+        dp_two_id = resolve_data_path_id(cur, _to)
+        app.logger.debug('Mapping %s <-> %s', _from, _to)
+        insert_data_path_match(
+            cur, dp_one_id, dp_two_id, author, annotation,
+            validated=validated,
+            weight=weight,
+            needs_human=needs_human or True if annotation else False
+        )
 
 @app.route('/api/v1/map/datapath/single', methods=['POST'])
 def api_map_datapath_single():
@@ -900,100 +879,57 @@ def api_map_datapath_single():
         return flask.jsonify({'error': str(e), 'result': False}), 400
 
 def map_datapath_single_by_key(basepath_key, matchpath_key, author, weight, annotation):
-    basepath = fetch_datapath(basepath_key)
-    if not basepath:
-        raise Exception('Specified base DataPath not found!')
-    matchpath = fetch_datapath(matchpath_key)
-    if not matchpath:
-        raise Exception('Specified matching DataPath not found!')
-    client = ArangoClient(hosts='http://dbms:{}'.format(ARANGO_PORT))
-    db = client.db('tdm', username='root', password='tdm')
-    datapath_matches = db.collection('DataPathMatch')
-    datapath_match_exist = datapath_matches.find({'_from': basepath['_id'], '_to': matchpath['_id']})
-    if datapath_match_exist.count() != 0:
-        raise Exception('Mapping already exists!')
-    datapath_match_exist = datapath_matches.find({'_to': basepath['_id'], '_from': matchpath['_id']})
-    if datapath_match_exist.count() != 0:
-        raise Exception('Mapping already exists!')
-    app.logger.debug('Mapping %s <-> %s', basepath['_id'], matchpath['_id'])
-    datapath_matches.insert(
-        {
-            '_from': basepath['_id'],
-            '_to': matchpath['_id'],
-            'timestamp': time.time(),
-            'author': author,
-            'validated': False,
-            'weight': weight,
-            'annotation': annotation,
-            'needs_human': False if not annotation or weight == 100 else True
-        }
+    with db.cursor() as cur:
+        cur.execute('SELECT 1 FROM data_path WHERE data_path_id = %s', (basepath_key,))
+        if cur.fetchone() is None:
+            raise Exception('Specified base DataPath not found!')
+        cur.execute('SELECT 1 FROM data_path WHERE data_path_id = %s', (matchpath_key,))
+        if cur.fetchone() is None:
+            raise Exception('Specified matching DataPath not found!')
+        app.logger.debug('Mapping %s <-> %s', basepath_key, matchpath_key)
+        insert_data_path_match(
+            cur, basepath_key, matchpath_key, author, annotation,
+            validated=False,
+            weight=weight,
+            needs_human=False if not annotation or weight == 100 else True
+        )
+
+def resolve_data_path_id(cur, value):
+    """Resolve a machine_id or human_id to its data_path_id.
+
+    machine_id is UNIQUE so it can never be ambiguous on its own, but
+    human_id is not -- keep the "more than one match" guard.
+    """
+    cur.execute(
+        'SELECT data_path_id FROM data_path WHERE machine_id = %s OR human_id = %s',
+        (value, value)
     )
+    rows = cur.fetchall()
+    if not rows:
+        raise Exception('Unable to find (machine_id or human_id: %s)!' % value)
+    if len(rows) > 1:
+        raise Exception('More than one document exists for (machine_id or human_id: %s)!' % value)
+    return rows[0]['data_path_id']
 
-def check_collection_fields(collection, fields, value, return_single=True, db=None):
-    if db is None:
-        client = ArangoClient(hosts='http://dbms:{}'.format(ARANGO_PORT))
-        db = client.db('tdm', username='root', password='tdm')
-    collection_ref = db.collection(collection)
-    return_val = None
-    exception_messages = []
-    for field in fields:
-        check = collection_ref.find({field: value})
-        if return_single and check.count() > 1:
-            exception_messages.append('More than one document exists for (%s: %s)!' % (field, value))
-        elif check.count() > 0:
-            return_val = check
-            break
-        else:
-            exception_messages.append('Unable to find (%s: %s)!' % (field, value))
-    if return_val is None and exception_messages:
-        raise Exception(' '.join(exception_messages))
-    return return_val
+def insert_data_path_match(cur, dp_one_id, dp_two_id, author, annotation, validated=False, weight=0, needs_human=True):
+    """Insert a DataPathMatch row.
 
-def add_mapping(edge_collection, from_id, to_id, body=None, check_bidirectional=True, db=None):
-    if db is None:
-        client = ArangoClient(hosts='http://dbms:{}'.format(ARANGO_PORT))
-        db = client.db('tdm', username='root', password='tdm')
-    collection_ref = db.collection(edge_collection)
-    mapping = collection_ref.find({'_from': from_id, '_to': to_id})
-    if mapping.count() != 0:
+    data_path_match enforces CHECK (data_path_a_id < data_path_b_id) as its
+    undirected-pair invariant, so the two resolved ids must be sorted
+    ascending before insert regardless of which one is "base"/"match" on
+    the caller's side. ON CONFLICT reproduces the old "mapping already
+    exists" error instead of a raw constraint violation reaching the user.
+    """
+    a_id, b_id = sorted((dp_one_id, dp_two_id))
+    cur.execute("""
+        INSERT INTO data_path_match
+            (data_path_a_id, data_path_b_id, author, validated, weight, annotation, needs_human)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (data_path_a_id, data_path_b_id) DO NOTHING
+        RETURNING data_path_match_id
+    """, (a_id, b_id, author, validated, weight, annotation, needs_human))
+    if cur.fetchone() is None:
         raise Exception('Mapping already exists!')
-    if check_bidirectional is True:
-        mapping = collection_ref.find({'_to': from_id, '_from': to_id})
-        if mapping.count() != 0:
-            raise Exception('Mapping already exists!')
-    if not body:
-        body = {}
-    body['_from'] = from_id
-    body['_to'] = to_id
-    collection_ref.insert(body)
-
-def map_datapath_single(_from, _to, author, annotation, timestamp=None, validated=False, weight=0, needs_human=True):
-    dp_one_id = None
-    dp_two_id = None
-    check_fields = ['machine_id', 'human_id']
-    dp_one_doc = check_collection_fields('DataPath', check_fields, _from)
-    if dp_one_doc is not None:
-        dp_one_id = dp_one_doc.next()['_id']
-    dp_two_doc = check_collection_fields('DataPath', check_fields, _to)
-    if dp_two_doc is not None:
-        dp_two_id = dp_two_doc.next()['_id']
-    if dp_one_id is None or dp_two_id is None:
-        exception_messages = []
-        if dp_one_id is None:
-            exception_messages.append('Could not find %s!' % _from)
-        if dp_two_id is None:
-            exception_messages.append('Could not find %s!' % _to)
-        raise Exception(' '.join(exception_messages))
-    match_body = {
-        'timestamp': timestamp or time.time(),
-        'author': author,
-        'validated': validated,
-        'weight': weight,
-        'annotation': annotation,
-        'needs_human': needs_human or True if annotation else False
-    }
-    app.logger.debug('Mapping %s <-> %s', _from, _to)
-    add_mapping('DataPathMatch', dp_one_id, dp_two_id, match_body)
 
 @app.route('/api/v1/map/dump/csv')
 def api_dump_mappings_csv():
