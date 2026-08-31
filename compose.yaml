@@ -89,7 +89,7 @@ services:
         protocol: tcp
         mode: host
       - target: 80
-        published: 80
+        published: 32080
         protocol: tcp
         mode: host
       - target: 5601
@@ -110,7 +110,7 @@ services:
         source: doc_storage
         target: /srv/doc
         read_only: true
-      - "./nginx/nginx.conf:/etc/nginx/nginx.conf:ro"
+      - "./nginx/nginx.conf:/etc/nginx/nginx.conf:ro,Z"
   goaccess:
     image: allinurl/goaccess:latest
     entrypoint: sh -c "while true; do goaccess --no-global-config --config-file=/srv/data/web.conf && goaccess --no-global-config --config-file=/srv/data/dbms.conf && goaccess --no-global-config --config-file=/srv/data/kibana.conf; sleep 60; done"
