@@ -62,7 +62,7 @@ function updateSearchResults(response) {
                     outputHTML += "</div>";
                     outputHTML += "<ul class=\"list\">";
                     for (let dataPath of modelDataPaths) {
-                        outputHTML += "<li><div class=\"panel panel--bordered\"><a target=\"_blank\" href=\"/datapath/view/" + dataPath["_key"] + "\">" + dataPath["human_id"] + "</a></div></li>";
+                        outputHTML += "<li><div class=\"panel panel--bordered\"><a target=\"_blank\" href=\"/datapath/view/" + dataPath["data_path_id"] + "\">" + dataPath["human_id"] + "</a></div></li>";
                     }
                     outputHTML += "</ul></div>";
                 }

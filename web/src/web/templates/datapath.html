@@ -273,7 +273,7 @@ function restoreElement(elementId) {
                     <tbody>
                         {% for datapath in datapath_mappings %}
                         <tr>
-                            <td><a href="{{ url_for('datapath_details', _key=datapath['_key']) }}">{{ datapath['human_id'] }}</a></td>
+                            <td><a href="{{ url_for('datapath_details', data_path_id=datapath['data_path_id']) }}">{{ datapath['human_id'] }}</a></td>
                         </tr>
                         {% endfor %}
                     </tbody>
@@ -283,7 +283,7 @@ function restoreElement(elementId) {
             <div class="panel">
                 <h6>Add Match</h6>
                 <hr>
-                <form action="{{ url_for('datapath_match', _key=datapath['_key']) }}" method="POST">
+                <form action="{{ url_for('datapath_match', data_path_id=datapath['data_path_id']) }}" method="POST">
                     {{ macros.render_field(match_form.hidden_tag) }}
                     {{ macros.render_field(match_form.matchpath_key) }}
                     <div class="form-group form-group--helper">
@@ -311,7 +311,7 @@ function restoreElement(elementId) {
                 <tbody>
                     {% for datapath in datapath_children %}
                     <tr>
-                        <td><a href="{{ url_for('datapath_details', _key=datapath['_key']) }}">{{ datapath['human_id'] }}</a></td>
+                        <td><a href="{{ url_for('datapath_details', data_path_id=datapath['data_path_id']) }}">{{ datapath['human_id'] }}</a></td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -326,7 +326,7 @@ function restoreElement(elementId) {
                 <tbody>
                     {% for datapath in datapath_parent %}
                     <tr>
-                        <td><a href="{{ url_for('datapath_details', _key=datapath['_key']) }}">{{ datapath['human_id'] }}</a></td>
+                        <td><a href="{{ url_for('datapath_details', data_path_id=datapath['data_path_id']) }}">{{ datapath['human_id'] }}</a></td>
                     </tr>
                     {% endfor %}
                 </tbody>

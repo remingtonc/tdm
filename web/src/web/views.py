@@ -71,11 +71,11 @@ def matchmaker():
     match_form = forms.MatchForm()
     return flask.render_template('matchmaker.html', match_form=match_form)
 
-@app.route('/datapath/match/<int:_key>', methods=['POST'])
-def datapath_match(_key):
+@app.route('/datapath/match/<int:data_path_id>', methods=['POST'])
+def datapath_match(data_path_id):
     match_form = forms.DataPathMatchForm()
     if match_form.validate_on_submit():
-        basepath_key = int(_key)
+        basepath_key = int(data_path_id)
         matchpath_key = int(match_form.matchpath_key.data)
         author = match_form.author.data.strip()
         annotation = match_form.annotation.data.strip()
@@ -89,13 +89,13 @@ def datapath_match(_key):
         for field, errors in match_form.errors.items():
             error_msg += '<strong>%s</strong><br>%s<br>' % (field, '<br>'.join(errors))
         flask.flash(error_msg)
-    return flask.redirect(flask.url_for('datapath_details', _key=int(_key)))
+    return flask.redirect(flask.url_for('datapath_details', data_path_id=int(data_path_id)))
 
-@app.route('/datapath/view/<int:_key>')
-def datapath_details(_key):
+@app.route('/datapath/view/<int:data_path_id>')
+def datapath_details(data_path_id):
     match_form = forms.DataPathMatchForm()
     datapath_oses = set()
-    for dp_graph in fetch_datapath_os_graph(_key):
+    for dp_graph in fetch_datapath_os_graph(data_path_id):
         dp_os = dp_graph['os_name']
         if dp_os:
             if dp_graph['os_release']:
@@ -103,7 +103,7 @@ def datapath_details(_key):
             datapath_oses.add(dp_os)
     datapath_dmls = set()
     datapath_models = {}
-    for dp_graph in fetch_datapath_dml_graph(_key):
+    for dp_graph in fetch_datapath_dml_graph(data_path_id):
         dml_name = dp_graph['dml_name']
         if dml_name:
             datapath_dmls.add(dml_name)
@@ -113,14 +113,14 @@ def datapath_details(_key):
                 datapath_models[datamodel_name] = []
             datapath_models[datamodel_name].append({'revision': dp_graph['datamodel_revision'] or '', 'dml': dml_name})
     return flask.render_template('datapath.html',
-        datapath=fetch_datapath(_key),
+        datapath=fetch_datapath(data_path_id),
         datapath_models=datapath_models,
         datapath_oses=datapath_oses,
         datapath_dmls=datapath_dmls,
-        datapath_parent=fetch_datapath_parent(_key),
-        datapath_children=fetch_datapath_children(_key),
-        datapath_datatypes=fetch_datapath_datatype(_key),
-        datapath_mappings=fetch_datapath_mappings(_key),
+        datapath_parent=fetch_datapath_parent(data_path_id),
+        datapath_children=fetch_datapath_children(data_path_id),
+        datapath_datatypes=fetch_datapath_datatype(data_path_id),
+        datapath_mappings=fetch_datapath_mappings(data_path_id),
         match_form=match_form
     )
 
@@ -178,7 +178,7 @@ def datapath_direct():
         elif not direct_dps:
             flask.flash('No matching DataPaths found!', 'warning')
         else:
-            return flask.redirect(flask.url_for('datapath_details', _key=direct_dps[0]['data_path_id']), code=303)
+            return flask.redirect(flask.url_for('datapath_details', data_path_id=direct_dps[0]['data_path_id']), code=303)
     return flask.render_template('datapath_direct.html', direct_form=direct_form, multi_paths=multi_paths)
 
 def fetch_datapath_arbitrary_id(path):

@@ -61,7 +61,7 @@ function createDataPathEntry(datapath, rowspan = null) {
         dataPathEntry.setAttribute("rowspan", rowspan);
     dataPathEntry.classList.add("datapath");
     let dataPathURL = document.createElement("a");
-    dataPathURL.setAttribute("href", endpointMap["datapath_details"] + datapath["_key"]);
+    dataPathURL.setAttribute("href", endpointMap["datapath_details"] + datapath["data_path_id"]);
     dataPathURL.setAttribute("machine_id", datapath["machine_id"]);
     dataPathURL.setAttribute("human_id", datapath["human_id"]);
     dataPathURL.appendChild(document.createTextNode(datapath["human_id"]));
