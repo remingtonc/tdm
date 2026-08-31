@@ -757,8 +757,7 @@ def api_map_bulk():
     elif not allowed_file(secure_filename(mappings_file.filename)):
         return 'File appears insecure and not allowed!', 400
     bulk_results = {'success': [], 'fail': []}
-    bulk_fd = io.TextIOWrapper(mappings_file.stream, encoding='utf-8')
-    bulk_csv = csv.DictReader(bulk_fd)
+    bulk_csv = csv.DictReader(io.StringIO(mappings_file.stream.read().decode('utf-8')))
     for row in bulk_csv:
         pair = [row['First DataPath'], row['Second DataPath']]
         try:
