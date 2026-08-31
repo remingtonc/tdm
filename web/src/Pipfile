@@ -8,7 +8,6 @@ name = "pypi"
 [packages]
 
 flask = "*"
-python-arango = "*"
 psycopg2-binary = "==2.8.6"
 flask-wtf = "==0.15.1"
 wtforms = "==2.3.3"

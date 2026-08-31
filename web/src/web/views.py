@@ -18,14 +18,11 @@ import io
 from collections import OrderedDict
 import flask
 from itertools import chain
-from arango import ArangoClient
 from elasticsearch import Elasticsearch
 from werkzeug.utils import secure_filename
 from . import forms
 from . import app
 from . import db
-
-ARANGO_PORT = 8529
 
 @app.route('/')
 def index():
@@ -1024,17 +1021,6 @@ def fetch_dump_mappings():
             JOIN data_path b ON b.data_path_id = dpm.data_path_b_id
         """)
         return cur.fetchall()
-
-def query_db(query, bind_vars=None, unlist=True):
-    """Generically query database."""
-    client = ArangoClient(hosts='http://dbms:{}'.format(ARANGO_PORT))
-    db = client.db('tdm', username='root',password='tdm')
-    cursor = db.aql.execute(query, bind_vars=bind_vars)
-    # TODO: Pass as generator instead of fill array
-    return_elements = [element for element in cursor]
-    if unlist and len(return_elements) == 1:
-        return_elements = return_elements[0]
-    return return_elements
 
 """Ugly Jinja2 bandaid for XPath issues."""
 

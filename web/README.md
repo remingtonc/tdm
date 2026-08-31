@@ -16,8 +16,8 @@ Backup the TDM database of Data Path Mappings.
 ## Libraries
 * [Flask](http://flask.pocoo.org/)  
 Flask is a Python microframework for web-based services development. It's super awesome.
-* [python-arango](https://github.com/joowani/python-arango)  
-Great Python ArangoDB client.
+* [psycopg2](https://www.psycopg.org/)  
+PostgreSQL database adapter for Python.
 * [elasticsearch](https://github.com/elastic/elasticsearch-py)  
 Low-level Elasticsearch client.
 
@@ -27,4 +27,4 @@ Low-level Elasticsearch client.
 * Should clean up views.py with clean separation of the HTML views and APIs as well as logical organization of functions.
 * DataPath view should indicate the associated OS/Releases/Platforms, and the displayed Matches should indicate their verification status and other interesting properties. A "Details" view should be present to get all the detailed attributes of the mapping.
 * DataPath Match should be limited to leaf nodes only.
-* DataPath View pathing should rely on the Machine ID not the _key. _key will vary per ETL. (???)
+* DataPath View pathing should rely on the Machine ID, not the surrogate `data_path_id`, since the latter is a Postgres-assigned key with no stable meaning outside this database (varies per ETL run, same as `_key` did before it).
