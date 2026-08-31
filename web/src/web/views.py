@@ -24,12 +24,20 @@ from elasticsearch import Elasticsearch
 from werkzeug.utils import secure_filename
 from . import forms
 from . import app
+from . import db
 
 ARANGO_PORT = 8529
 
 @app.route('/')
 def index():
     return flask.render_template('index.html')
+
+@app.route('/healthz/db')
+def healthz_db():
+    with db.cursor() as cur:
+        cur.execute('SELECT 1')
+        cur.fetchone()
+    return flask.jsonify(status='ok')
 
 @app.route('/datapath/matches', methods=['GET'])
 def datapath_matches():

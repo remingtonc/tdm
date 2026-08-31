@@ -9,6 +9,7 @@ name = "pypi"
 
 flask = "*"
 python-arango = "*"
+psycopg2-binary = "==2.8.6"
 flask-wtf = "*"
 elasticsearch = ">=6.4.0,<7.0.0"
 gevent = "*"
