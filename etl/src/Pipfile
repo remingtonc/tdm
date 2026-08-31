@@ -7,7 +7,7 @@ name = "pypi"
 psycopg2-binary = "==2.8.6"
 pyang = "==1.7.5"
 pysmi = "==0.3.4"
-elasticsearch = "*"
+elasticsearch = ">=6.4.0,<7.0.0"
 
 [dev-packages]
 

@@ -10,7 +10,7 @@ name = "pypi"
 flask = "*"
 python-arango = "*"
 flask-wtf = "*"
-elasticsearch = "*"
+elasticsearch = ">=6.4.0,<7.0.0"
 gevent = "*"
 email_validator = "*"
 
