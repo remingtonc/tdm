@@ -64,8 +64,12 @@ def query_all_datapaths(conn):
     cur = conn.cursor('datapath_search_cursor')
     cur.itersize = 1000
     cur.execute(DATAPATH_QUERY)
-    columns = [desc[0] for desc in cur.description]
+    columns = None
     for row in cur:
+        if columns is None:
+            # psycopg2 only populates description for named cursors after
+            # the first row is fetched, not immediately after execute()
+            columns = [desc[0] for desc in cur.description]
         yield dict(zip(columns, row))
     cur.close()
 
