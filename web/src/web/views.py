@@ -121,7 +121,7 @@ def datapath_details(data_path_id):
         match_form=match_form
     )
 
-def fetch_datapath_os_graph(_key):
+def fetch_datapath_os_graph(data_path_id):
     with db.cursor() as cur:
         cur.execute("""
             SELECT dm.name AS datamodel_name, dm.revision AS datamodel_revision,
@@ -132,10 +132,10 @@ def fetch_datapath_os_graph(_key):
             JOIN release ON release.release_id = rdm.release_id
             JOIN os ON os.os_id = release.os_id
             WHERE dps.data_path_id = %s
-        """, (_key,))
+        """, (data_path_id,))
         return cur.fetchall()
 
-def fetch_datapath_dml_graph(_key):
+def fetch_datapath_dml_graph(data_path_id):
     with db.cursor() as cur:
         cur.execute("""
             SELECT dm.name AS datamodel_name, dm.revision AS datamodel_revision,
@@ -144,10 +144,10 @@ def fetch_datapath_dml_graph(_key):
             JOIN data_model dm ON dm.data_model_id = dps.data_model_id
             JOIN data_model_language dml ON dml.data_model_language_id = dm.data_model_language_id
             WHERE dps.data_path_id = %s
-        """, (_key,))
+        """, (data_path_id,))
         return cur.fetchall()
 
-def fetch_datapath_mappings(_key):
+def fetch_datapath_mappings(data_path_id):
     with db.cursor() as cur:
         cur.execute("""
             SELECT
@@ -159,7 +159,7 @@ def fetch_datapath_mappings(_key):
                 CASE WHEN dpm.data_path_a_id = %(key)s
                      THEN dpm.data_path_b_id ELSE dpm.data_path_a_id END
             WHERE dpm.data_path_a_id = %(key)s OR dpm.data_path_b_id = %(key)s
-        """, {'key': _key})
+        """, {'key': data_path_id})
         return cur.fetchall()
 
 @app.route('/datapath/direct', methods=['GET', 'POST'])
@@ -186,33 +186,33 @@ def fetch_datapath_arbitrary_id(path):
         """, (path, path))
         return cur.fetchall()
 
-def fetch_datapath_datatype(_key):
+def fetch_datapath_datatype(data_path_id):
     with db.cursor() as cur:
         cur.execute("""
             SELECT dt.data_type_id, dt.name FROM data_path dp
             JOIN data_type dt USING (data_type_id)
             WHERE dp.data_path_id = %s
-        """, (_key,))
+        """, (data_path_id,))
         return cur.fetchall()
 
-def fetch_datapath_parent(_key):
+def fetch_datapath_parent(data_path_id):
     with db.cursor() as cur:
         cur.execute("""
             SELECT data_path_id, human_id FROM data_path
             WHERE data_path_id = (SELECT parent_id FROM data_path WHERE data_path_id = %s)
-        """, (_key,))
+        """, (data_path_id,))
         return cur.fetchall()
 
-def fetch_datapath_children(_key):
+def fetch_datapath_children(data_path_id):
     with db.cursor() as cur:
         cur.execute("""
             SELECT data_path_id, human_id FROM data_path
             WHERE parent_id = %s
             ORDER BY data_path_id
-        """, (_key,))
+        """, (data_path_id,))
         return cur.fetchall()
 
-def fetch_datapath_models(_key):
+def fetch_datapath_models(data_path_id):
     with db.cursor() as cur:
         cur.execute("""
             SELECT dm.name, dm.revision
@@ -220,12 +220,12 @@ def fetch_datapath_models(_key):
             JOIN data_model dm ON dm.data_model_id = dps.data_model_id
             WHERE dps.data_path_id = %s
             ORDER BY dm.data_model_id
-        """, (_key,))
+        """, (data_path_id,))
         return cur.fetchall()
 
-def fetch_datapath(_key):
+def fetch_datapath(data_path_id):
     with db.cursor() as cur:
-        cur.execute('SELECT * FROM data_path WHERE data_path_id = %s', (_key,))
+        cur.execute('SELECT * FROM data_path WHERE data_path_id = %s', (data_path_id,))
         return cur.fetchone()
 
 def _fetch_given_data_paths(cur, given_dps):
