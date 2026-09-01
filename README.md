@@ -73,9 +73,7 @@ All ports will be exposed on your Podman host interface. Typically you don't nee
 
 * Port `80` (HTTP) or `443` (HTTPS) exposes the TDM Web UI.
   * `/goaccess_web.html` exposes website access statistics.
-  * `/goaccess_db.html` exposes ArangoDB access statistics.
   * `/goaccess_kibana.html` exposes Kibana access statistics.
-* Port `8529` exposes the ArangoDB Web UI and API.
 * Port `5601` exposes Kibana for exploring the TDM Search cache (Elasticsearch).
 
 ## Licensing

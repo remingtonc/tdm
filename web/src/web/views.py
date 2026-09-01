@@ -14,22 +14,27 @@ limitations under the License.
 """
 import json
 import csv
-import time
 import io
 from collections import OrderedDict
+from datetime import datetime, timezone
 import flask
 from itertools import chain
-from arango import ArangoClient
 from elasticsearch import Elasticsearch
 from werkzeug.utils import secure_filename
 from . import forms
 from . import app
-
-ARANGO_PORT = 8529
+from . import db
 
 @app.route('/')
 def index():
     return flask.render_template('index.html')
+
+@app.route('/healthz/db')
+def healthz_db():
+    with db.cursor() as cur:
+        cur.execute('SELECT 1')
+        cur.fetchone()
+    return flask.jsonify(status='ok')
 
 @app.route('/datapath/matches', methods=['GET'])
 def datapath_matches():
@@ -39,33 +44,36 @@ def datapath_matches():
     )
 
 def fetch_all_matches():
-    all_matches_query = """
-    RETURN MERGE(
-    FOR dml IN DataModelLanguage
-        RETURN {
-        [ dml.name ]: (
-            FOR v, e, p IN 3..3 OUTBOUND dml OfDataModelLanguage, DataPathFromDataModel, ANY DataPathMatch
-            SORT p.vertices[2].human_id
-            RETURN DISTINCT({
-                '_key': p.vertices[2]._key,
-                'human_id': p.vertices[2].human_id
+    with db.cursor() as cur:
+        cur.execute('SELECT name FROM data_model_language ORDER BY name')
+        result = {row['name']: [] for row in cur.fetchall()}
+        cur.execute("""
+            SELECT DISTINCT dml.name AS dml_name, dp.data_path_id, dp.human_id
+            FROM data_model_language dml
+            JOIN data_model dm ON dm.data_model_language_id = dml.data_model_language_id
+            JOIN data_path_source dps ON dps.data_model_id = dm.data_model_id
+            JOIN data_path dp ON dp.data_path_id = dps.data_path_id
+            JOIN data_path_match dpm
+                ON dpm.data_path_a_id = dp.data_path_id OR dpm.data_path_b_id = dp.data_path_id
+            ORDER BY dml.name, dp.human_id
+        """)
+        for row in cur.fetchall():
+            result[row['dml_name']].append({
+                'data_path_id': row['data_path_id'],
+                'human_id': row['human_id']
             })
-        )
-        }
-    )
-    """
-    return query_db(all_matches_query)
+    return result
 
 @app.route('/matchmaker')
 def matchmaker():
     match_form = forms.MatchForm()
     return flask.render_template('matchmaker.html', match_form=match_form)
 
-@app.route('/datapath/match/<int:_key>', methods=['POST'])
-def datapath_match(_key):
+@app.route('/datapath/match/<int:data_path_id>', methods=['POST'])
+def datapath_match(data_path_id):
     match_form = forms.DataPathMatchForm()
     if match_form.validate_on_submit():
-        basepath_key = int(_key)
+        basepath_key = int(data_path_id)
         matchpath_key = int(match_form.matchpath_key.data)
         author = match_form.author.data.strip()
         annotation = match_form.annotation.data.strip()
@@ -79,13 +87,13 @@ def datapath_match(_key):
         for field, errors in match_form.errors.items():
             error_msg += '<strong>%s</strong><br>%s<br>' % (field, '<br>'.join(errors))
         flask.flash(error_msg)
-    return flask.redirect(flask.url_for('datapath_details', _key=int(_key)))
+    return flask.redirect(flask.url_for('datapath_details', data_path_id=int(data_path_id)))
 
-@app.route('/datapath/view/<int:_key>')
-def datapath_details(_key):
+@app.route('/datapath/view/<int:data_path_id>')
+def datapath_details(data_path_id):
     match_form = forms.DataPathMatchForm()
     datapath_oses = set()
-    for dp_graph in fetch_datapath_os_graph(_key):
+    for dp_graph in fetch_datapath_os_graph(data_path_id):
         dp_os = dp_graph['os_name']
         if dp_os:
             if dp_graph['os_release']:
@@ -93,7 +101,7 @@ def datapath_details(_key):
             datapath_oses.add(dp_os)
     datapath_dmls = set()
     datapath_models = {}
-    for dp_graph in fetch_datapath_dml_graph(_key):
+    for dp_graph in fetch_datapath_dml_graph(data_path_id):
         dml_name = dp_graph['dml_name']
         if dml_name:
             datapath_dmls.add(dml_name)
@@ -103,57 +111,57 @@ def datapath_details(_key):
                 datapath_models[datamodel_name] = []
             datapath_models[datamodel_name].append({'revision': dp_graph['datamodel_revision'] or '', 'dml': dml_name})
     return flask.render_template('datapath.html',
-        datapath=fetch_datapath(_key),
+        datapath=fetch_datapath(data_path_id),
         datapath_models=datapath_models,
         datapath_oses=datapath_oses,
         datapath_dmls=datapath_dmls,
-        datapath_parent=fetch_datapath_parent(_key),
-        datapath_children=fetch_datapath_children(_key),
-        datapath_datatypes=fetch_datapath_datatype(_key),
-        datapath_mappings=fetch_datapath_mappings(_key),
+        datapath_parent=fetch_datapath_parent(data_path_id),
+        datapath_children=fetch_datapath_children(data_path_id),
+        datapath_datatypes=fetch_datapath_datatype(data_path_id),
+        datapath_mappings=fetch_datapath_mappings(data_path_id),
         match_form=match_form
     )
 
-def fetch_datapath_os_graph(_key):
-    datapath_os_graph_query = """
-    LET datapath = DOCUMENT(CONCAT('DataPath/', @key))
-    FOR v, e, p IN 1..3 INBOUND datapath DataPathFromDataModel, ReleaseHasDataModel, OSHasRelease
-    RETURN {
-        "datamodel_name": p.vertices[1].name,
-        "datamodel_revision": p.vertices[1].revision,
-        "os_release": p.vertices[2].name,
-        "os_name": p.vertices[3].name
-    }
-    """
-    bind_vars = {'key': _key}
-    return query_db(datapath_os_graph_query, bind_vars, unlist=False)
+def fetch_datapath_os_graph(data_path_id):
+    with db.cursor() as cur:
+        cur.execute("""
+            SELECT dm.name AS datamodel_name, dm.revision AS datamodel_revision,
+                   release.name AS os_release, os.name AS os_name
+            FROM data_path_source dps
+            JOIN data_model dm ON dm.data_model_id = dps.data_model_id
+            JOIN release_data_model rdm ON rdm.data_model_id = dm.data_model_id
+            JOIN release ON release.release_id = rdm.release_id
+            JOIN os ON os.os_id = release.os_id
+            WHERE dps.data_path_id = %s
+        """, (data_path_id,))
+        return cur.fetchall()
 
-def fetch_datapath_dml_graph(_key):
-    datapath_dml_graph_query = """
-    LET datapath = DOCUMENT(CONCAT('DataPath/', @key))
-    FOR v, e, p IN 2..2 INBOUND datapath DataPathFromDataModel, OfDataModelLanguage
-    RETURN {
-        "datamodel_name": p.vertices[1].name,
-        "datamodel_revision": p.vertices[1].revision,
-        "dml_name": p.vertices[2].name
-    }
-    """
-    bind_vars = {'key': _key}
-    return query_db(datapath_dml_graph_query, bind_vars, unlist=False)
+def fetch_datapath_dml_graph(data_path_id):
+    with db.cursor() as cur:
+        cur.execute("""
+            SELECT dm.name AS datamodel_name, dm.revision AS datamodel_revision,
+                   dml.name AS dml_name
+            FROM data_path_source dps
+            JOIN data_model dm ON dm.data_model_id = dps.data_model_id
+            JOIN data_model_language dml ON dml.data_model_language_id = dm.data_model_language_id
+            WHERE dps.data_path_id = %s
+        """, (data_path_id,))
+        return cur.fetchall()
 
-def fetch_datapath_mappings(_key):
-    datapath_mappings_query = """
-        LET dp_id = CONCAT("DataPath/", @key)
-        FOR dp_match IN DataPathMatch
-            FILTER dp_match._from == dp_id || dp_match._to == dp_id
-            LET dp = DOCUMENT(dp_match._from == dp_id ? dp_match._to : dp_match._from)
-            RETURN {
-                '_key': dp._key,
-                'human_id': dp.human_id
-            }
-    """
-    bind_vars = {'key': _key}
-    return query_db(datapath_mappings_query, bind_vars, unlist=False)
+def fetch_datapath_mappings(data_path_id):
+    with db.cursor() as cur:
+        cur.execute("""
+            SELECT
+                CASE WHEN dpm.data_path_a_id = %(key)s
+                     THEN dpm.data_path_b_id ELSE dpm.data_path_a_id END AS data_path_id,
+                other.human_id
+            FROM data_path_match dpm
+            JOIN data_path other ON other.data_path_id =
+                CASE WHEN dpm.data_path_a_id = %(key)s
+                     THEN dpm.data_path_b_id ELSE dpm.data_path_a_id END
+            WHERE dpm.data_path_a_id = %(key)s OR dpm.data_path_b_id = %(key)s
+        """, {'key': data_path_id})
+        return cur.fetchall()
 
 @app.route('/datapath/direct', methods=['GET', 'POST'])
 def datapath_direct():
@@ -168,112 +176,116 @@ def datapath_direct():
         elif not direct_dps:
             flask.flash('No matching DataPaths found!', 'warning')
         else:
-            return flask.redirect(flask.url_for('datapath_details', _key=direct_dps[0]['_key']), code=303)
+            return flask.redirect(flask.url_for('datapath_details', data_path_id=direct_dps[0]['data_path_id']), code=303)
     return flask.render_template('datapath_direct.html', direct_form=direct_form, multi_paths=multi_paths)
 
 def fetch_datapath_arbitrary_id(path):
-    datapath_arbitrary_id_query = """
-        FOR dp IN DataPath
-            FILTER dp.human_id == @path || dp.machine_id == @path
-            RETURN {
-                '_key': dp._key,
-                'machine_id': dp.machine_id
-            }
-    """
-    bind_vars = {'path': path}
-    return query_db(datapath_arbitrary_id_query, bind_vars, unlist=False)
+    with db.cursor() as cur:
+        cur.execute("""
+            SELECT data_path_id, machine_id FROM data_path
+            WHERE human_id = %s OR machine_id = %s
+        """, (path, path))
+        return cur.fetchall()
 
-def fetch_datapath_datatype(_key):
-    datapath_datatype_query = """
-        LET dp_id = CONCAT("DataPath/", @key)
-        FOR dp_dt IN OfDataType
-            FILTER dp_dt._from == dp_id
-            LET dt_doc = DOCUMENT(dp_dt._to)
-            RETURN {
-                "_key": dt_doc._key,
-                "name": dt_doc.name
-            }
-    """
-    bind_vars = {'key': _key}
-    return query_db(datapath_datatype_query, bind_vars, unlist=False)
+def fetch_datapath_datatype(data_path_id):
+    with db.cursor() as cur:
+        cur.execute("""
+            SELECT dt.data_type_id, dt.name FROM data_path dp
+            JOIN data_type dt USING (data_type_id)
+            WHERE dp.data_path_id = %s
+        """, (data_path_id,))
+        return cur.fetchall()
 
-def fetch_datapath_parent(_key):
-    datapath_parent_query = """
-        LET dp_id = CONCAT("DataPath/", @key)
-        FOR dp_parent IN DataPathParent
-            FILTER dp_parent._from == dp_id
-            SORT dp_parent._to
-            LET dp_parent_doc = DOCUMENT(dp_parent._to)
-            RETURN {
-                "_key": dp_parent_doc._key,
-                "human_id": dp_parent_doc.human_id
-            }
-    """
-    bind_vars = {'key': _key}
-    return query_db(datapath_parent_query, bind_vars, unlist=False)
+def fetch_datapath_parent(data_path_id):
+    with db.cursor() as cur:
+        cur.execute("""
+            SELECT data_path_id, human_id FROM data_path
+            WHERE data_path_id = (SELECT parent_id FROM data_path WHERE data_path_id = %s)
+        """, (data_path_id,))
+        return cur.fetchall()
 
-def fetch_datapath_children(_key):
-    datapath_children_query = """
-        LET dp_id = CONCAT("DataPath/", @key)
-        FOR dp_child IN DataPathChild
-            FILTER dp_child._from == dp_id
-            SORT dp_child._to
-            LET dp_child_doc = DOCUMENT(dp_child._to)
-            RETURN {
-                "_key": dp_child_doc._key,
-                "human_id": dp_child_doc.human_id
-            }
-    """
-    bind_vars = {'key': _key}
-    return query_db(datapath_children_query, bind_vars, unlist=False)
+def fetch_datapath_children(data_path_id):
+    with db.cursor() as cur:
+        cur.execute("""
+            SELECT data_path_id, human_id FROM data_path
+            WHERE parent_id = %s
+            ORDER BY data_path_id
+        """, (data_path_id,))
+        return cur.fetchall()
 
-def fetch_datapath_models(_key):
-    datapath_model_query = """
-        LET dp_id = CONCAT("DataPath/", @key)
-        FOR model_child IN DataPathFromDataModel
-            FILTER model_child._to == dp_id
-            SORT model_child._from
-            LET model_doc = DOCUMENT(model_child._from)
-            RETURN {
-                "name": model_doc.name,
-                "revision": model_doc.revision
-            }
-    """
-    bind_vars = {'key': _key}
-    return query_db(datapath_model_query, bind_vars, unlist=False)
+def fetch_datapath_models(data_path_id):
+    with db.cursor() as cur:
+        cur.execute("""
+            SELECT dm.name, dm.revision
+            FROM data_path_source dps
+            JOIN data_model dm ON dm.data_model_id = dps.data_model_id
+            WHERE dps.data_path_id = %s
+            ORDER BY dm.data_model_id
+        """, (data_path_id,))
+        return cur.fetchall()
 
-def fetch_datapath(_key):
-    datapath_query = """RETURN DOCUMENT(CONCAT("DataPath/", @key))"""
-    bind_vars = {'key': _key}
-    return query_db(datapath_query, bind_vars)
+def fetch_datapath(data_path_id):
+    with db.cursor() as cur:
+        cur.execute('SELECT * FROM data_path WHERE data_path_id = %s', (data_path_id,))
+        return cur.fetchone()
+
+def _fetch_given_data_paths(cur, given_dps):
+    cur.execute("""
+        SELECT data_path_id, human_id, machine_id FROM data_path
+        WHERE human_id = ANY(%(dps)s) OR machine_id = ANY(%(dps)s)
+    """, {'dps': list(given_dps)})
+    return cur.fetchall()
+
+def _resolve_data_path_ids(cur, values):
+    """Batch equivalent of resolve_data_path_id: one query for many values.
+
+    Priority matches resolve_data_path_id -- machine_id (unique) wins over
+    human_id (not unique) for the same input value.
+    """
+    values = list(values)
+    by_machine_id = {}
+    by_human_id = {}
+    for row in _fetch_given_data_paths(cur, values):
+        if row['machine_id'] is not None:
+            by_machine_id.setdefault(row['machine_id'], []).append(row)
+        if row['human_id'] is not None:
+            by_human_id.setdefault(row['human_id'], []).append(row)
+    resolved = {}
+    for value in values:
+        if value in by_machine_id:
+            resolved[value] = by_machine_id[value][0]['data_path_id']
+            continue
+        matches = by_human_id.get(value, [])
+        if not matches:
+            raise Exception('Unable to find (machine_id or human_id: %s)!' % value)
+        if len(matches) > 1:
+            raise Exception('More than one document exists for (machine_id or human_id: %s)!' % value)
+        resolved[value] = matches[0]['data_path_id']
+    return resolved
 
 def fetch_matches(given_dps):
-    match_query = """
-    LET given_dps = @given_dps
-    FOR dp IN DataPath
-        FILTER dp.human_id IN @given_dps || dp.machine_id IN @given_dps
-        LET result = {
-            "_key": dp._key,
-            "human_id": dp.human_id,
-            "machine_id": dp.machine_id,
-            "matches": FLATTEN(
-                FOR dp_eq IN DataPathMatch
-                    FILTER dp_eq._from == dp._id || dp_eq._to == dp._id
-                    LET tdm_dp = dp_eq._from == dp._id ? DOCUMENT(dp_eq._to) : DOCUMENT(dp_eq._from)
-                    SORT tdm_dp.human_id
-                    RETURN {
-                        "_key": tdm_dp._key,
-                        "human_id": tdm_dp.human_id,
-                        "machine_id": tdm_dp.machine_id
-                    }
-            )
-        }
-        FILTER LENGTH(result.matches) != 0
-        SORT result.human_id
-        RETURN result
-    """
-    bind_vars = {'given_dps': given_dps}
-    return query_db(match_query, bind_vars, unlist=False)
+    results = []
+    with db.cursor() as cur:
+        for dp in _fetch_given_data_paths(cur, given_dps):
+            cur.execute("""
+                SELECT other.data_path_id, other.human_id, other.machine_id
+                FROM data_path_match dpm
+                JOIN data_path other ON other.data_path_id =
+                    CASE WHEN dpm.data_path_a_id = %(id)s
+                         THEN dpm.data_path_b_id ELSE dpm.data_path_a_id END
+                WHERE dpm.data_path_a_id = %(id)s OR dpm.data_path_b_id = %(id)s
+                ORDER BY other.human_id
+            """, {'id': dp['data_path_id']})
+            match_rows = cur.fetchall()
+            if match_rows:
+                results.append({
+                    'data_path_id': dp['data_path_id'],
+                    'human_id': dp['human_id'],
+                    'machine_id': dp['machine_id'],
+                    'matches': match_rows
+                })
+    results.sort(key=lambda r: r['human_id'] or '')
+    return results
 
 @app.route('/matches', methods=['POST'])
 def matches():
@@ -286,162 +298,109 @@ def matches():
     matches = fetch_matches(given_dps)
     return flask.jsonify(matches)
 
-def fetch_calculations(given_dps):
-    calculations_query = """
-    WITH DataPath, Calculation
-    LET given_dps = @given_dps
-    FOR dp IN DataPath
-    FILTER dp.human_id IN given_dps || dp.machine_id IN given_dps
-    LET result = {
-        "_key": dp._key,
-        "human_id": dp.human_id,
-        "machine_id": dp.machine_id,
-        "calculations": {
-        "as_result": (
-            FOR calc_result IN CalculationResult
-            FILTER calc_result._to == dp._id
-            LET calculation = DOCUMENT(calc_result._from)
-            RETURN {
-                "_key": calculation._key,
-                "name": calculation.name,
-                "result": {
-                "_key": dp._key,
-                "human_id": dp.human_id,
-                "machine_id": dp.machine_id
-                },
-                "factors": (
-                FOR calc_factor IN InCalculation
-                    FILTER calc_factor._to == calculation._id
-                    LET factor_dp = DOCUMENT(calc_factor._from)
-                    RETURN {
-                    "_key": factor_dp._key,
-                    "human_id": factor_dp.human_id,
-                    "machine_id": factor_dp.machine_id
-                    }
-                )
-            }
-        ),
-        "as_factor": (
-            FOR calc_factor IN InCalculation
-            FILTER calc_factor._from == dp._id
-            LET calculation = DOCUMENT(calc_factor._to)
-            RETURN {
-                "_key": calculation._key,
-                "name": calculation.name,
-                "result": FIRST(
-                FOR result IN CalculationResult
-                    FILTER calculation._id == result._from
-                    LET result_dp = DOCUMENT(result._to)
-                    RETURN {
-                    "_key": result_dp._key,
-                    "human_id": result_dp.human_id,
-                    "machine_id": result_dp.machine_id
-                    }
-                ),
-                "factors": (
-                FOR calc_calc_factor IN InCalculation
-                    FILTER calc_calc_factor._to == calculation._id
-                    LET factor_dp = DOCUMENT(calc_calc_factor._from)
-                    RETURN {
-                    "_key": factor_dp._key,
-                    "human_id": factor_dp.human_id,
-                    "machine_id": factor_dp.machine_id
-                    }
-                )
-            }
-        )
+def _calc_factors(cur, calculation_id):
+    cur.execute("""
+        SELECT factor.data_path_id, factor.human_id, factor.machine_id
+        FROM calculation_input ci
+        JOIN data_path factor ON factor.data_path_id = ci.data_path_id
+        WHERE ci.calculation_id = %s
+    """, (calculation_id,))
+    return cur.fetchall()
+
+def _calc_result_dps(cur, calculation_id):
+    cur.execute("""
+        SELECT result.data_path_id, result.human_id, result.machine_id
+        FROM calculation_result cr
+        JOIN data_path result ON result.data_path_id = cr.data_path_id
+        WHERE cr.calculation_id = %s
+    """, (calculation_id,))
+    return cur.fetchall()
+
+def _calcs_as_result(cur, dp):
+    cur.execute("""
+        SELECT calc.calculation_id, calc.name
+        FROM calculation_result cr
+        JOIN calculation calc USING (calculation_id)
+        WHERE cr.data_path_id = %s
+    """, (dp['data_path_id'],))
+    return [
+        {
+            'calculation_id': calc['calculation_id'],
+            'name': calc['name'],
+            'result': {
+                'data_path_id': dp['data_path_id'],
+                'human_id': dp['human_id'],
+                'machine_id': dp['machine_id']
+            },
+            'factors': _calc_factors(cur, calc['calculation_id'])
         }
-    }
-    FILTER LENGTH(result.calculations.as_result) != 0 || LENGTH(result.calculations.as_factor) != 0
-    SORT result.human_id
-    RETURN result
-    """
-    bind_vars = {'given_dps': given_dps}
-    return query_db(calculations_query, bind_vars, unlist=False)
+        for calc in cur.fetchall()
+    ]
+
+def _calcs_as_factor(cur, dp):
+    cur.execute("""
+        SELECT calc.calculation_id, calc.name
+        FROM calculation_input ci
+        JOIN calculation calc USING (calculation_id)
+        WHERE ci.data_path_id = %s
+    """, (dp['data_path_id'],))
+    calcs = cur.fetchall()
+    results = []
+    for calc in calcs:
+        result_dps = _calc_result_dps(cur, calc['calculation_id'])
+        results.append({
+            'calculation_id': calc['calculation_id'],
+            'name': calc['name'],
+            'result': result_dps[0] if result_dps else None,
+            'factors': _calc_factors(cur, calc['calculation_id'])
+        })
+    return results
+
+def fetch_calculations(given_dps):
+    results = []
+    with db.cursor() as cur:
+        for dp in _fetch_given_data_paths(cur, given_dps):
+            as_result = _calcs_as_result(cur, dp)
+            as_factor = _calcs_as_factor(cur, dp)
+            if as_result or as_factor:
+                results.append({
+                    'data_path_id': dp['data_path_id'],
+                    'human_id': dp['human_id'],
+                    'machine_id': dp['machine_id'],
+                    'calculations': {'as_result': as_result, 'as_factor': as_factor}
+                })
+    results.sort(key=lambda r: r['human_id'] or '')
+    return results
 
 def fetch_calculations_as_result(given_dps):
-    calculations_query = """
-    WITH DataPath, Calculation
-    LET given_dps = @given_dps
-    FOR dp IN DataPath
-    FILTER dp.human_id IN given_dps || dp.machine_id IN given_dps
-    LET result = {
-        "_key": dp._key,
-        "human_id": dp.human_id,
-        "machine_id": dp.machine_id,
-        "calculations": (
-            FOR calc_result IN CalculationResult
-            FILTER calc_result._to == dp._id
-            LET calculation = DOCUMENT(calc_result._from)
-            RETURN {
-                "_key": calculation._key,
-                "name": calculation.name,
-                "factors": (
-                FOR calc_factor IN InCalculation
-                    FILTER calc_factor._to == calculation._id
-                    LET factor_dp = DOCUMENT(calc_factor._from)
-                    RETURN {
-                    "_key": factor_dp._key,
-                    "human_id": factor_dp.human_id,
-                    "machine_id": factor_dp.machine_id
-                    }
-                )
-            }
-        )
-    }
-    FILTER LENGTH(result.calculations) != 0
-    SORT result.human_id
-    RETURN result
-    """
-    bind_vars = {'given_dps': given_dps}
-    return query_db(calculations_query, bind_vars, unlist=False)
+    results = []
+    with db.cursor() as cur:
+        for dp in _fetch_given_data_paths(cur, given_dps):
+            calcs = _calcs_as_result(cur, dp)
+            if calcs:
+                results.append({
+                    'data_path_id': dp['data_path_id'],
+                    'human_id': dp['human_id'],
+                    'machine_id': dp['machine_id'],
+                    'calculations': calcs
+                })
+    results.sort(key=lambda r: r['human_id'] or '')
+    return results
 
 def fetch_calculations_as_factor(given_dps):
-    calculations_query = """
-    WITH DataPath, Calculation
-    LET given_dps = @given_dps
-    FOR dp IN DataPath
-    FILTER dp.human_id IN given_dps || dp.machine_id IN given_dps
-    LET result = {
-        "_key": dp._key,
-        "human_id": dp.human_id,
-        "machine_id": dp.machine_id,
-        "calculations": (
-            FOR calc_factor IN InCalculation
-            FILTER calc_factor._from == dp._id
-            LET calculation = DOCUMENT(calc_factor._to)
-            RETURN {
-                "_key": calculation._key,
-                "name": calculation.name,
-                "result": FIRST(
-                FOR result IN CalculationResult
-                    FILTER calculation._id == result._from
-                    LET result_dp = DOCUMENT(result._to)
-                    RETURN {
-                    "_key": result_dp._key,
-                    "human_id": result_dp.human_id,
-                    "machine_id": result_dp.machine_id
-                    }
-                ),
-                "factors": (
-                FOR calc_calc_factor IN InCalculation
-                    FILTER calc_calc_factor._to == calculation._id
-                    LET factor_dp = DOCUMENT(calc_calc_factor._from)
-                    RETURN {
-                    "_key": factor_dp._key,
-                    "human_id": factor_dp.human_id,
-                    "machine_id": factor_dp.machine_id
-                    }
-                )
-            }
-        )
-    }
-    FILTER LENGTH(result.calculations) != 0
-    SORT result.human_id
-    RETURN result
-    """
-    bind_vars = {'given_dps': given_dps}
-    return query_db(calculations_query, bind_vars, unlist=False)
+    results = []
+    with db.cursor() as cur:
+        for dp in _fetch_given_data_paths(cur, given_dps):
+            calcs = _calcs_as_factor(cur, dp)
+            if calcs:
+                results.append({
+                    'data_path_id': dp['data_path_id'],
+                    'human_id': dp['human_id'],
+                    'machine_id': dp['machine_id'],
+                    'calculations': calcs
+                })
+    results.sort(key=lambda r: r['human_id'] or '')
+    return results
 
 @app.route('/calculations_as_result', methods=['POST'])
 def calculations_as_result():
@@ -476,18 +435,24 @@ def calculations():
     calculations = fetch_calculations(given_dps)
     return flask.jsonify(calculations)
 
+# given_collections is client-controlled JSON; only ever resolve it through
+# this fixed allow-list, never interpolate it directly into a query.
+_COLLECTION_COUNT_TABLES = {
+    'DataPath': 'data_path',
+    'Release': 'release',
+    'DataModel': 'data_model'
+}
+
 def fetch_collection_counts(given_collections):
-    collection_count_query = """
-    LET given_collections = @given_collections
-    RETURN MERGE(
-    FOR collection IN given_collections
-        RETURN {
-        [ collection ]: COLLECTION_COUNT(collection)
-        }
-    )
-    """
-    bind_vars = {'given_collections': given_collections}
-    return query_db(collection_count_query, bind_vars)
+    counts = {}
+    with db.cursor() as cur:
+        for collection in given_collections:
+            table = _COLLECTION_COUNT_TABLES.get(collection)
+            if table is None:
+                continue
+            cur.execute('SELECT COUNT(*) AS count FROM %s' % table)
+            counts[collection] = cur.fetchone()['count']
+    return counts
 
 @app.route('/collection-counts', methods=['POST'])
 def collection_counts():
@@ -689,124 +654,60 @@ def fetch_search_data_paths_es(filter_os_releases, filter_dmls, filter_str, excl
     return response
 
 def fetch_search_data_paths(filter_os_releases, filter_dmls, filter_str, exclude_config=True, only_leaves=True, start_index=0, max_return_count=10):
-    search_data_paths_query = """
-    LET given_os_releases = @filter_os_releases
-    LET given_dmls = @filter_dmls
-    LET filter_str = CONCAT_SEPARATOR(",", UNIQUE(SPLIT(SUBSTITUTE(@filter_str, [" ", "-", "/", ":"], ","), ",")))
-
-    LET dml_ids = FLATTEN(
-        FOR dml IN DataModelLanguage
-            FILTER dml.name IN given_dmls
-            RETURN dml._id
+    os_release_pairs = tuple(
+        (os_name, release_name)
+        for os_name, release_names in filter_os_releases.items()
+        for release_name in release_names
     )
+    if not os_release_pairs or not filter_dmls:
+        return {}
 
-    LET dml_dm_ids = FLATTEN(
-        FOR dml_dm IN OfDataModelLanguage
-            FILTER dml_dm._from IN dml_ids
-            RETURN dml_dm._to
-    )
+    conditions = [
+        '(os.name, release.name) IN %(os_release_pairs)s',
+        'dml.name = ANY(%(dml_names)s)',
+        'dp.is_leaf = %(only_leaves)s'
+    ]
+    if filter_str:
+        conditions.append("dp.search_vector @@ plainto_tsquery('simple', %(filter_str)s)")
+    if exclude_config:
+        conditions.append('dp.is_configurable = FALSE')
+    where_clause = ' AND '.join(conditions)
 
-    LET dml_dm_dp_ids = FLATTEN(
-        FOR dm_dp IN DataPathFromDataModel
-            FILTER dm_dp._from IN dml_dm_ids
-            RETURN dm_dp._to
-    )
-
-    LET filtered_dml_dm_dp_human_ids = FLATTEN(
-        FOR dp IN FULLTEXT(DataPath, "human_id", filter_str)
-            FILTER dp._id IN dml_dm_dp_ids
-            RETURN dp._id
-    )
-
-    LET filtered_dml_dm_dp_machine_ids = FLATTEN(
-        FOR dp IN FULLTEXT(DataPath, "machine_id", filter_str)
-            FILTER dp._id IN dml_dm_dp_ids
-            RETURN dp._id
-    )
-
-    LET filtered_dml_dm_dp_ids = UNION_DISTINCT(filtered_dml_dm_dp_human_ids, filtered_dml_dm_dp_machine_ids)
-
-    LET filtered_dml_dp_dm_ids = FLATTEN(
-        FOR dm_dp IN DataPathFromDataModel
-            FILTER dm_dp._to IN filtered_dml_dm_dp_ids
-            RETURN dm_dp._from
-    )
-
-    RETURN MERGE(
-        FOR os IN OS
-            FILTER os.name IN ATTRIBUTES(given_os_releases)
-            SORT os.name
-            RETURN {
-                [ os.name ]: MERGE(
-                    LET os_releases = FLATTEN(
-                        FOR os_release IN OSHasRelease
-                            FILTER os_release._from == os._id
-                            RETURN os_release._to
-                    )
-                    FOR release IN Release
-                        FILTER release._id IN os_releases
-                        FILTER release.name IN TRANSLATE(os.name, given_os_releases)
-                        SORT release.name
-                        RETURN {
-                            [ release.name ]: MERGE(
-                                LET filtered_release_dms = FLATTEN(
-                                    FOR release_dm IN ReleaseHasDataModel
-                                        FILTER release_dm._from == release._id
-                                        FILTER release_dm._to IN filtered_dml_dp_dm_ids
-                                        RETURN release_dm._to
-                                )
-                                FOR dml IN DataModelLanguage
-                                    FILTER dml._id IN dml_ids
-                                    RETURN {
-                                        [ dml.name ]: MERGE(
-                                            LET filtered_release_dml_dms = FLATTEN(
-                                                FOR dml_dm IN OfDataModelLanguage
-                                                    FILTER dml_dm._from == dml._id
-                                                    FILTER dml_dm._to IN filtered_release_dms
-                                                    RETURN dml_dm._to
-                                            )
-                                            FOR dm IN DataModel
-                                                FILTER dm._id IN filtered_release_dml_dms
-                                                RETURN {
-                                                    [ dm.name ]: FLATTEN(
-                                                        LET filtered_release_dml_dm_dps = FLATTEN(
-                                                            FOR dm_dp IN DataPathFromDataModel
-                                                                FILTER dm_dp._from IN filtered_release_dml_dms
-                                                                FILTER dm_dp._from == dm._id
-                                                                RETURN dm_dp._to
-                                                        )
-                                                        FOR dp IN DataPath
-                                                            FILTER dp._id IN filtered_release_dml_dm_dps
-                                                            FILTER dp._id IN filtered_dml_dm_dp_ids
-                                                            %s
-                                                            %s
-                                                            SORT dp.human_id
-                                                            LIMIT @start_index, @max_return_count
-                                                            RETURN {
-                                                                "_key": dp._key,
-                                                                "human_id": dp.human_id
-                                                            }
-                                                    )
-                                                }
-                                        )
-                                    }
-                            )
-                        }
-                )
-            }
-    )
-    """ % (
-        'FILTER dp.is_configurable == False' if exclude_config else '',
-        'FILTER dp.is_leaf == True' if only_leaves else ''
-    )
+    search_data_paths_query = f"""
+        SELECT os.name AS os_name, release.name AS release_name,
+               dml.name AS dml_name, dm.name AS dm_name,
+               dp.data_path_id, dp.human_id
+        FROM data_path dp
+        JOIN data_path_source dps ON dps.data_path_id = dp.data_path_id
+        JOIN data_model dm ON dm.data_model_id = dps.data_model_id
+        JOIN data_model_language dml ON dml.data_model_language_id = dm.data_model_language_id
+        JOIN release_data_model rdm ON rdm.data_model_id = dm.data_model_id
+        JOIN release ON release.release_id = rdm.release_id
+        JOIN os ON os.os_id = release.os_id
+        WHERE {where_clause}
+        ORDER BY dp.human_id
+        LIMIT %(max_return_count)s OFFSET %(start_index)s
+    """
     bind_vars = {
-        'filter_os_releases': filter_os_releases,
-        'filter_dmls': filter_dmls,
+        'os_release_pairs': os_release_pairs,
+        'dml_names': list(filter_dmls),
         'filter_str': filter_str,
-        'start_index': start_index,
-        'max_return_count': max_return_count
+        'only_leaves': bool(only_leaves),
+        'max_return_count': max_return_count,
+        'start_index': start_index
     }
-    return query_db(search_data_paths_query, bind_vars)
+    with db.cursor() as cur:
+        cur.execute(search_data_paths_query, bind_vars)
+        rows = cur.fetchall()
+
+    result = {}
+    for row in rows:
+        (result.setdefault(row['os_name'], {})
+               .setdefault(row['release_name'], {})
+               .setdefault(row['dml_name'], {})
+               .setdefault(row['dm_name'], [])
+               .append({'data_path_id': row['data_path_id'], 'human_id': row['human_id']}))
+    return result
 
 def construct_search_form(es=False):
     search_form = None
@@ -819,24 +720,19 @@ def construct_search_form(es=False):
     return search_form
 
 def fetch_os_releases():
-    os_releases_query = """
-    FOR os IN OS
-        FOR os_release IN OSHasRelease
-        FILTER os_release._from == os._id
-            FOR release IN Release
-            FILTER release._id == os_release._to
-            SORT os.name ASC, release.name DESC
-            RETURN CONCAT_SEPARATOR(" - ", os.name, release.name)
-    """
-    return query_db(os_releases_query)
+    with db.cursor() as cur:
+        cur.execute("""
+            SELECT os.name AS os_name, release.name AS release_name
+            FROM os
+            JOIN release USING (os_id)
+            ORDER BY os.name ASC, release.name DESC
+        """)
+        return ['%s - %s' % (row['os_name'], row['release_name']) for row in cur.fetchall()]
 
 def fetch_dmls():
-    dmls_query = """
-    FOR dml IN DataModelLanguage
-        SORT dml.name
-        RETURN dml.name
-    """
-    return query_db(dmls_query)
+    with db.cursor() as cur:
+        cur.execute('SELECT name FROM data_model_language ORDER BY name')
+        return [row['name'] for row in cur.fetchall()]
 
 @app.route('/map-bulk', methods=['GET'])
 def html_map_bulk():
@@ -857,7 +753,7 @@ def api_datapath_from_arbitrary_id():
     elif len(datapaths) > 1:
         error = 'Multiple DataPaths found for ID! <a href="%s" target="_blank">Try being more specific with a Machine ID. :)</a>' % flask.url_for('datapath_direct')
     else:
-        key = datapaths[0]['_key']
+        key = datapaths[0]['data_path_id']
     return flask.jsonify(
         {
             'error': error,
@@ -867,7 +763,8 @@ def api_datapath_from_arbitrary_id():
 
 @app.route('/api/v1/map/datapath/bulk', methods=['POST'])
 def api_map_bulk():
-    """Expects CSV with columns _from and _to.
+    """Expects CSV with columns 'First DataPath', 'Second DataPath', 'Author',
+    'Annotation' -- the same format produced by /api/v1/map/dump/csv.
     """
     mappings_file = None
     if not flask.request.files:
@@ -885,14 +782,14 @@ def api_map_bulk():
     elif not allowed_file(secure_filename(mappings_file.filename)):
         return 'File appears insecure and not allowed!', 400
     bulk_results = {'success': [], 'fail': []}
-    with open(mappings_file.save()) as bulk_fd:
-        bulk_csv = csv.DictReader(bulk_fd)
-        for row in bulk_csv:
-            try:
-                map_datapath_single(row['First DataPath'], row['Second DataPath'], row['Author'], row['Annotation'])
-                bulk_results['success'] += [[row['_from'], row['_to']]]
-            except Exception:
-                bulk_results['fail'] += [[row['_from'], row['_to']]]
+    bulk_csv = csv.DictReader(io.StringIO(mappings_file.stream.read().decode('utf-8')))
+    for row in bulk_csv:
+        pair = [row['First DataPath'], row['Second DataPath']]
+        try:
+            map_datapath_single(row['First DataPath'], row['Second DataPath'], row['Author'], row['Annotation'])
+            bulk_results['success'].append(pair)
+        except Exception:
+            bulk_results['fail'].append(pair)
     return flask.jsonify(bulk_results)
 
 def allowed_file(filename):
@@ -950,64 +847,46 @@ def api_map_load_native():
     return flask.jsonify(failures)
 
 def map_datapath_calculation_single(name, description, equation, author, InCalculation, CalculationResult):
-    in_calculation_ids = set()
-    calculation_result_ids = set()
-    check_fields = ['machine_id', 'human_id']
-    for in_calc in InCalculation:
-        in_calc_doc = check_collection_fields('DataPath', check_fields, in_calc)
-        if in_calc_doc is not None:
-            in_calculation_ids.add(in_calc_doc.next()['_id'])
-    for calc_result in CalculationResult:
-        calc_result_doc = check_collection_fields('DataPath', check_fields, calc_result)
-        if calc_result_doc is not None:
-            calculation_result_ids.add(calc_result_doc.next()['_id'])
-    client = ArangoClient(hosts='http://dbms:{}'.format(ARANGO_PORT))
-    db = client.db('tdm', username='root', password='tdm')
-    calculation_collection = db.collection('Calculation')
-    calculation_exists = calculation_collection.find({'name': name})
-    if calculation_exists.count() > 0:
-        raise Exception('Calculation of name %s already exists!' % name)
-    app.logger.debug('Adding calculation %s', name)
-    calc_doc = calculation_collection.insert(
-        {
-            'name': name,
-            'description': description,
-            'equation': equation,
-            'author': author
-        }
-    )
-    for dp_id in in_calculation_ids:
-        add_mapping('InCalculation', dp_id, calc_doc['_id'])
-    for dp_id in calculation_result_ids:
-        add_mapping('CalculationResult', calc_doc['_id'], dp_id)
+    with db.cursor() as cur:
+        resolved = _resolve_data_path_ids(cur, set(InCalculation) | set(CalculationResult))
+        in_calculation_ids = {resolved[dp] for dp in InCalculation}
+        calculation_result_ids = {resolved[dp] for dp in CalculationResult}
+        app.logger.debug('Adding calculation %s', name)
+        # calculation.name is UNIQUE; ON CONFLICT makes the existence check
+        # atomic with the insert instead of a racy SELECT-then-INSERT.
+        cur.execute("""
+            INSERT INTO calculation (name, description, equation, author)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (name) DO NOTHING
+            RETURNING calculation_id
+        """, (name, description, equation, author))
+        row = cur.fetchone()
+        if row is None:
+            raise Exception('Calculation of name %s already exists!' % name)
+        calculation_id = row['calculation_id']
+        for dp_id in in_calculation_ids:
+            cur.execute(
+                'INSERT INTO calculation_input (data_path_id, calculation_id) VALUES (%s, %s)',
+                (dp_id, calculation_id)
+            )
+        for dp_id in calculation_result_ids:
+            cur.execute(
+                'INSERT INTO calculation_result (calculation_id, data_path_id) VALUES (%s, %s)',
+                (calculation_id, dp_id)
+            )
 
 def map_datapath_single(_from, _to, author, annotation, timestamp=None, validated=False, weight=0, needs_human=True):
-    dp_one_id = None
-    dp_two_id = None
-    check_fields = ['machine_id', 'human_id']
-    dp_one_doc = check_collection_fields('DataPath', check_fields, _from)
-    if dp_one_doc is not None:
-        dp_one_id = dp_one_doc.next()['_id']
-    dp_two_doc = check_collection_fields('DataPath', check_fields, _to)
-    if dp_two_doc is not None:
-        dp_two_id = dp_two_doc.next()['_id']
-    if dp_one_id is None or dp_two_id is None:
-        exception_messages = []
-        if dp_one_id is None:
-            exception_messages.append('Could not find %s!' % _from)
-        if dp_two_id is None:
-            exception_messages.append('Could not find %s!' % _to)
-        raise Exception(' '.join(exception_messages))
-    match_body = {
-        'timestamp': timestamp or time.time(),
-        'author': author,
-        'validated': validated,
-        'weight': weight,
-        'annotation': annotation,
-        'needs_human': needs_human or True if annotation else False
-    }
-    app.logger.debug('Mapping %s <-> %s', _from, _to)
-    add_mapping('DataPathMatch', dp_one_id, dp_two_id, match_body)
+    with db.cursor() as cur:
+        dp_one_id = resolve_data_path_id(cur, _from)
+        dp_two_id = resolve_data_path_id(cur, _to)
+        app.logger.debug('Mapping %s <-> %s', _from, _to)
+        insert_data_path_match(
+            cur, dp_one_id, dp_two_id, author, annotation,
+            validated=validated,
+            weight=weight,
+            needs_human=needs_human or True if annotation else False,
+            created_at=datetime.fromtimestamp(timestamp, tz=timezone.utc) if timestamp is not None else None
+        )
 
 @app.route('/api/v1/map/datapath/single', methods=['POST'])
 def api_map_datapath_single():
@@ -1028,100 +907,62 @@ def api_map_datapath_single():
         return flask.jsonify({'error': str(e), 'result': False}), 400
 
 def map_datapath_single_by_key(basepath_key, matchpath_key, author, weight, annotation):
-    basepath = fetch_datapath(basepath_key)
-    if not basepath:
-        raise Exception('Specified base DataPath not found!')
-    matchpath = fetch_datapath(matchpath_key)
-    if not matchpath:
-        raise Exception('Specified matching DataPath not found!')
-    client = ArangoClient(hosts='http://dbms:{}'.format(ARANGO_PORT))
-    db = client.db('tdm', username='root', password='tdm')
-    datapath_matches = db.collection('DataPathMatch')
-    datapath_match_exist = datapath_matches.find({'_from': basepath['_id'], '_to': matchpath['_id']})
-    if datapath_match_exist.count() != 0:
-        raise Exception('Mapping already exists!')
-    datapath_match_exist = datapath_matches.find({'_to': basepath['_id'], '_from': matchpath['_id']})
-    if datapath_match_exist.count() != 0:
-        raise Exception('Mapping already exists!')
-    app.logger.debug('Mapping %s <-> %s', basepath['_id'], matchpath['_id'])
-    datapath_matches.insert(
-        {
-            '_from': basepath['_id'],
-            '_to': matchpath['_id'],
-            'timestamp': time.time(),
-            'author': author,
-            'validated': False,
-            'weight': weight,
-            'annotation': annotation,
-            'needs_human': False if not annotation or weight == 100 else True
-        }
-    )
+    with db.cursor() as cur:
+        cur.execute('SELECT 1 FROM data_path WHERE data_path_id = %s', (basepath_key,))
+        if cur.fetchone() is None:
+            raise Exception('Specified base DataPath not found!')
+        cur.execute('SELECT 1 FROM data_path WHERE data_path_id = %s', (matchpath_key,))
+        if cur.fetchone() is None:
+            raise Exception('Specified matching DataPath not found!')
+        app.logger.debug('Mapping %s <-> %s', basepath_key, matchpath_key)
+        insert_data_path_match(
+            cur, basepath_key, matchpath_key, author, annotation,
+            validated=False,
+            weight=weight,
+            needs_human=False if not annotation or weight == 100 else True
+        )
 
-def check_collection_fields(collection, fields, value, return_single=True, db=None):
-    if db is None:
-        client = ArangoClient(hosts='http://dbms:{}'.format(ARANGO_PORT))
-        db = client.db('tdm', username='root', password='tdm')
-    collection_ref = db.collection(collection)
-    return_val = None
-    exception_messages = []
-    for field in fields:
-        check = collection_ref.find({field: value})
-        if return_single and check.count() > 1:
-            exception_messages.append('More than one document exists for (%s: %s)!' % (field, value))
-        elif check.count() > 0:
-            return_val = check
-            break
-        else:
-            exception_messages.append('Unable to find (%s: %s)!' % (field, value))
-    if return_val is None and exception_messages:
-        raise Exception(' '.join(exception_messages))
-    return return_val
+def resolve_data_path_id(cur, value):
+    """Resolve a machine_id or human_id to its data_path_id.
 
-def add_mapping(edge_collection, from_id, to_id, body=None, check_bidirectional=True, db=None):
-    if db is None:
-        client = ArangoClient(hosts='http://dbms:{}'.format(ARANGO_PORT))
-        db = client.db('tdm', username='root', password='tdm')
-    collection_ref = db.collection(edge_collection)
-    mapping = collection_ref.find({'_from': from_id, '_to': to_id})
-    if mapping.count() != 0:
+    machine_id is UNIQUE so it can never be ambiguous on its own and is
+    checked first, short-circuiting before human_id (which is not unique)
+    is ever consulted -- matches the old Arango lookup's field priority.
+    """
+    cur.execute('SELECT data_path_id FROM data_path WHERE machine_id = %s', (value,))
+    row = cur.fetchone()
+    if row is not None:
+        return row['data_path_id']
+    cur.execute('SELECT data_path_id FROM data_path WHERE human_id = %s', (value,))
+    rows = cur.fetchall()
+    if not rows:
+        raise Exception('Unable to find (machine_id or human_id: %s)!' % value)
+    if len(rows) > 1:
+        raise Exception('More than one document exists for (machine_id or human_id: %s)!' % value)
+    return rows[0]['data_path_id']
+
+def insert_data_path_match(cur, dp_one_id, dp_two_id, author, annotation, validated=False, weight=0, needs_human=True, created_at=None):
+    """Insert a DataPathMatch row.
+
+    data_path_match enforces CHECK (data_path_a_id < data_path_b_id) as its
+    undirected-pair invariant, so the two resolved ids must be sorted
+    ascending before insert regardless of which one is "base"/"match" on
+    the caller's side. ON CONFLICT reproduces the old "mapping already
+    exists" error instead of a raw constraint violation reaching the user.
+
+    created_at defaults to now() at insert time; pass an explicit value
+    to preserve a caller-supplied timestamp (e.g. restoring a native dump).
+    """
+    a_id, b_id = sorted((dp_one_id, dp_two_id))
+    cur.execute("""
+        INSERT INTO data_path_match
+            (data_path_a_id, data_path_b_id, author, validated, weight, annotation, needs_human, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, COALESCE(%s, now()))
+        ON CONFLICT (data_path_a_id, data_path_b_id) DO NOTHING
+        RETURNING data_path_match_id
+    """, (a_id, b_id, author, validated, weight, annotation, needs_human, created_at))
+    if cur.fetchone() is None:
         raise Exception('Mapping already exists!')
-    if check_bidirectional is True:
-        mapping = collection_ref.find({'_to': from_id, '_from': to_id})
-        if mapping.count() != 0:
-            raise Exception('Mapping already exists!')
-    if not body:
-        body = {}
-    body['_from'] = from_id
-    body['_to'] = to_id
-    collection_ref.insert(body)
-
-def map_datapath_single(_from, _to, author, annotation, timestamp=None, validated=False, weight=0, needs_human=True):
-    dp_one_id = None
-    dp_two_id = None
-    check_fields = ['machine_id', 'human_id']
-    dp_one_doc = check_collection_fields('DataPath', check_fields, _from)
-    if dp_one_doc is not None:
-        dp_one_id = dp_one_doc.next()['_id']
-    dp_two_doc = check_collection_fields('DataPath', check_fields, _to)
-    if dp_two_doc is not None:
-        dp_two_id = dp_two_doc.next()['_id']
-    if dp_one_id is None or dp_two_id is None:
-        exception_messages = []
-        if dp_one_id is None:
-            exception_messages.append('Could not find %s!' % _from)
-        if dp_two_id is None:
-            exception_messages.append('Could not find %s!' % _to)
-        raise Exception(' '.join(exception_messages))
-    match_body = {
-        'timestamp': timestamp or time.time(),
-        'author': author,
-        'validated': validated,
-        'weight': weight,
-        'annotation': annotation,
-        'needs_human': needs_human or True if annotation else False
-    }
-    app.logger.debug('Mapping %s <-> %s', _from, _to)
-    add_mapping('DataPathMatch', dp_one_id, dp_two_id, match_body)
 
 @app.route('/api/v1/map/dump/csv')
 def api_dump_mappings_csv():
@@ -1171,66 +1012,52 @@ def send_stringio(stringio_obj, mimetype, filename):
     )
 
 def fetch_dump_mappings_native():
-    dump_aql = """
-    RETURN {
-        "DataPathMatch": (
-            FOR dpm IN DataPathMatch
-            RETURN {
-                "_from": DOCUMENT(dpm._from).machine_id,
-                "_to": DOCUMENT(dpm._to).machine_id,
-                "author": dpm.author,
-                "annotation": dpm.annotation,
-                "timestamp": dpm.timestamp,
-                "validated": dpm.validated,
-                "weight": dpm.weight,
-                "needs_human": dpm.needs_human
+    with db.cursor() as cur:
+        cur.execute("""
+            SELECT a.machine_id AS from_machine_id, b.machine_id AS to_machine_id,
+                   dpm.author, dpm.annotation, dpm.created_at,
+                   dpm.validated, dpm.weight, dpm.needs_human
+            FROM data_path_match dpm
+            JOIN data_path a ON a.data_path_id = dpm.data_path_a_id
+            JOIN data_path b ON b.data_path_id = dpm.data_path_b_id
+        """)
+        matches = [
+            {
+                '_from': row['from_machine_id'],
+                '_to': row['to_machine_id'],
+                'author': row['author'],
+                'annotation': row['annotation'],
+                'timestamp': row['created_at'].timestamp(),
+                'validated': row['validated'],
+                'weight': row['weight'],
+                'needs_human': row['needs_human']
             }
-        ),
-        "Calculation": (
-            FOR calc IN Calculation
-            RETURN {
-                "name": calc.name,
-                "description": calc.description,
-                "equation": calc.equation,
-                "author": calc.author,
-                "InCalculation": FLATTEN(
-                FOR incalc IN InCalculation
-                    FILTER incalc._to == calc._id
-                    RETURN DOCUMENT(incalc._from).machine_id
-                ),
-                "CalculationResult": FLATTEN(
-                FOR calcresult IN CalculationResult
-                    FILTER calcresult._from == calc._id
-                    RETURN DOCUMENT(calcresult._to).machine_id
-                )
+            for row in cur.fetchall()
+        ]
+        cur.execute('SELECT calculation_id, name, description, equation, author FROM calculation')
+        calculations = [
+            {
+                'name': calc['name'],
+                'description': calc['description'],
+                'equation': calc['equation'],
+                'author': calc['author'],
+                'InCalculation': [row['machine_id'] for row in _calc_factors(cur, calc['calculation_id'])],
+                'CalculationResult': [row['machine_id'] for row in _calc_result_dps(cur, calc['calculation_id'])]
             }
-        )
-    }
-    """
-    return query_db(dump_aql)
+            for calc in cur.fetchall()
+        ]
+    return {'DataPathMatch': matches, 'Calculation': calculations}
 
 def fetch_dump_mappings():
-    dump_aql = """
-    FOR dpm IN DataPathMatch
-        RETURN {
-            "first_dp": DOCUMENT(dpm._from).machine_id,
-            "second_dp": DOCUMENT(dpm._to).machine_id,
-            "author": dpm.author,
-            "annotation": dpm.annotation
-        }
-    """
-    return query_db(dump_aql)
-
-def query_db(query, bind_vars=None, unlist=True):
-    """Generically query database."""
-    client = ArangoClient(hosts='http://dbms:{}'.format(ARANGO_PORT))
-    db = client.db('tdm', username='root',password='tdm')
-    cursor = db.aql.execute(query, bind_vars=bind_vars)
-    # TODO: Pass as generator instead of fill array
-    return_elements = [element for element in cursor]
-    if unlist and len(return_elements) == 1:
-        return_elements = return_elements[0]
-    return return_elements
+    with db.cursor() as cur:
+        cur.execute("""
+            SELECT a.machine_id AS first_dp, b.machine_id AS second_dp,
+                   dpm.author, dpm.annotation
+            FROM data_path_match dpm
+            JOIN data_path a ON a.data_path_id = dpm.data_path_a_id
+            JOIN data_path b ON b.data_path_id = dpm.data_path_b_id
+        """)
+        return cur.fetchall()
 
 """Ugly Jinja2 bandaid for XPath issues."""
 

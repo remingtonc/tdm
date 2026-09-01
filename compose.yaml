@@ -2,7 +2,6 @@ networks:
   backend:
 
 volumes:
-  dbms_storage:
   postgres_storage:
   nginx_logs:
   goaccess_report:
@@ -10,20 +9,6 @@ volumes:
   doc_storage:
 
 services:
-  dbms:
-    image: arangodb/arangodb:latest
-    volumes:
-      - type: volume
-        source: dbms_storage
-        target: /var/lib/arangodb3
-        volume:
-          nocopy: true
-    expose:
-      - "8529"
-    environment:
-      - ARANGO_ROOT_PASSWORD=tdm
-    networks:
-      - backend
   postgres:
     image: postgres:18-alpine
     volumes:
@@ -64,6 +49,8 @@ services:
     build:
       context: web/
       dockerfile: Containerfile
+    depends_on:
+      - postgres
     expose:
       - "80"
     environment:
@@ -82,12 +69,8 @@ services:
   nginx:
     image: nginx:alpine
     ports:
-      - target: 8529
-        published: 8529
-        protocol: tcp
-        mode: host
       - target: 80
-        published: 80
+        published: 32080
         protocol: tcp
         mode: host
       - target: 5601
@@ -108,10 +91,10 @@ services:
         source: doc_storage
         target: /srv/doc
         read_only: true
-      - "./nginx/nginx.conf:/etc/nginx/nginx.conf:ro"
+      - "./nginx/nginx.conf:/etc/nginx/nginx.conf:ro,Z"
   goaccess:
     image: allinurl/goaccess:latest
-    entrypoint: sh -c "while true; do goaccess --no-global-config --config-file=/srv/data/web.conf && goaccess --no-global-config --config-file=/srv/data/dbms.conf && goaccess --no-global-config --config-file=/srv/data/kibana.conf; sleep 60; done"
+    entrypoint: sh -c "while true; do goaccess --no-global-config --config-file=/srv/data/web.conf && goaccess --no-global-config --config-file=/srv/data/kibana.conf; sleep 60; done"
     networks:
       - backend
     volumes:
@@ -123,7 +106,6 @@ services:
         source: goaccess_report
         target: /srv/report
       - "./nginx/goaccess_web.conf:/srv/data/web.conf:ro"
-      - "./nginx/goaccess_dbms.conf:/srv/data/dbms.conf:ro"
       - "./nginx/goaccess_kibana.conf:/srv/data/kibana.conf:ro"
   search:
     image: docker.elastic.co/elasticsearch/elasticsearch:6.4.0

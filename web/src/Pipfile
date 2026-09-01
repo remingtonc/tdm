@@ -8,8 +8,9 @@ name = "pypi"
 [packages]
 
 flask = "*"
-python-arango = "*"
-flask-wtf = "*"
+psycopg2-binary = "==2.8.6"
+flask-wtf = "==0.15.1"
+wtforms = "==2.3.3"
 elasticsearch = ">=6.4.0,<7.0.0"
 gevent = "*"
 email_validator = "*"
@@ -17,6 +18,7 @@ email_validator = "*"
 
 [dev-packages]
 
+pytest = "*"
 
 
 [requires]

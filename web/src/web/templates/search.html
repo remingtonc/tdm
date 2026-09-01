@@ -29,15 +29,36 @@ function fetchSearch(form) {
     var searchEndpoint = endpointMap["search"];
     toggleLoading(searchLoader);
     document.getElementById("submit").classList.toggle("disabled");
-    postForm(searchEndpoint, form).then(response => response.json())
-    .catch(error => console.error("Error:", error))
-    .then(function(response) {
-        updateSearchResults(response);
-        document.getElementById("start_index").value = parseInt(document.getElementById("start_index").value) + parseInt(document.getElementById("max_return_count").value);
+    postForm(searchEndpoint, form).then(function(response) {
+        return response.json().then(function(body) {
+            return { ok: response.ok, body: body };
+        });
+    }).then(function(result) {
+        if (result.ok) {
+            updateSearchResults(result.body);
+            document.getElementById("start_index").value = parseInt(document.getElementById("start_index").value) + parseInt(document.getElementById("max_return_count").value);
+        } else {
+            updateSearchErrors(result.body);
+        }
+    }).catch(function(error) {
+        console.error("Error:", error);
+        updateSearchErrors({"Search request": ["Failed to reach the server. See console for details."]});
     }).finally(function() {
         toggleLoading(searchLoader);
         document.getElementById("submit").classList.toggle("disabled");
     }, searchLoader);
+}
+
+function updateSearchErrors(errors) {
+    var outputArea = document.getElementById("search-output");
+    var outputHTML = "<div class=\"alert alert--danger\"><div class=\"alert__icon icon-error\"></div><div class=\"alert__message\"><ul class=\"list\">";
+    for (var field in errors) {
+        for (let message of errors[field]) {
+            outputHTML += "<li>" + field + ": " + message + "</li>";
+        }
+    }
+    outputHTML += "</ul></div></div>";
+    outputArea.innerHTML = outputHTML;
 }
 
 function updateSearchResults(response) {
@@ -62,7 +83,7 @@ function updateSearchResults(response) {
                     outputHTML += "</div>";
                     outputHTML += "<ul class=\"list\">";
                     for (let dataPath of modelDataPaths) {
-                        outputHTML += "<li><div class=\"panel panel--bordered\"><a target=\"_blank\" href=\"/datapath/view/" + dataPath["_key"] + "\">" + dataPath["human_id"] + "</a></div></li>";
+                        outputHTML += "<li><div class=\"panel panel--bordered\"><a target=\"_blank\" href=\"/datapath/view/" + dataPath["data_path_id"] + "\">" + dataPath["human_id"] + "</a></div></li>";
                     }
                     outputHTML += "</ul></div>";
                 }

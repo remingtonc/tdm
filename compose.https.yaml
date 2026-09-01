@@ -2,7 +2,6 @@ networks:
   backend:
 
 volumes:
-  dbms_storage:
   postgres_storage:
   nginx_logs:
   goaccess_report:
@@ -16,20 +15,6 @@ secrets:
     file: ./nginx/tdm.cisco.com.key
 
 services:
-  dbms:
-    image: arangodb/arangodb:latest
-    volumes:
-      - type: volume
-        source: dbms_storage
-        target: /var/lib/arangodb3
-        volume:
-          nocopy: true
-    expose:
-      - "8529"
-    environment:
-      - ARANGO_ROOT_PASSWORD=tdm
-    networks:
-      - backend
   postgres:
     image: postgres:16-alpine
     volumes:
@@ -92,10 +77,6 @@ services:
         published: 443
         protocol: tcp
         mode: host
-      - target: 8529
-        published: 8529
-        protocol: tcp
-        mode: host
       - target: 80
         published: 80
         protocol: tcp
@@ -126,7 +107,7 @@ services:
         target: tdm.cisco.com.key
   goaccess:
     image: allinurl/goaccess:latest
-    entrypoint: sh -c "while true; do goaccess --no-global-config --config-file=/srv/data/web.conf && goaccess --no-global-config --config-file=/srv/data/dbms.conf && goaccess --no-global-config --config-file=/srv/data/kibana.conf; sleep 60; done"
+    entrypoint: sh -c "while true; do goaccess --no-global-config --config-file=/srv/data/web.conf && goaccess --no-global-config --config-file=/srv/data/kibana.conf; sleep 60; done"
     networks:
       - backend
     volumes:
@@ -138,7 +119,6 @@ services:
         source: goaccess_report
         target: /srv/report
       - "./nginx/goaccess_web.conf:/srv/data/web.conf:ro"
-      - "./nginx/goaccess_dbms.conf:/srv/data/dbms.conf:ro"
       - "./nginx/goaccess_kibana.conf:/srv/data/kibana.conf:ro"
   search:
     image: docker.elastic.co/elasticsearch/elasticsearch:6.4.0

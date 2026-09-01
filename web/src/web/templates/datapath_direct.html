@@ -33,7 +33,7 @@
                 <tbody>
                     {% for datapath in multi_paths %}
                     <tr>
-                        <td><a href="{{ url_for('datapath_details', _key=datapath['_key']) }}" target="_blank">{{ datapath['machine_id'] }}</a></td>
+                        <td><a href="{{ url_for('datapath_details', data_path_id=datapath['data_path_id']) }}" target="_blank">{{ datapath['machine_id'] }}</a></td>
                     </tr>
                     {% endfor %}
                 </tbody>

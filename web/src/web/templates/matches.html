@@ -11,7 +11,7 @@
     </div>
     <ul class="list">
     {% for match in dml_matches %}
-        <li><div class="panel panel--bordered"><a target="_blank" href="{{ url_for('datapath_details', _key=match['_key']) }}">{{ match['human_id'] }} </a></div></li>
+        <li><div class="panel panel--bordered"><a target="_blank" href="{{ url_for('datapath_details', data_path_id=match['data_path_id']) }}">{{ match['human_id'] }} </a></div></li>
     {% endfor %}
     </ul>
 </div>
