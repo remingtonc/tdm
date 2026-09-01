@@ -14,8 +14,6 @@ For HTTPS to be enabled, `tdm.cisco.com.crt` and `tdm.cisco.com.key` must be gen
 ## Goaccess
 By using NGINX, we also solve another big question - usage details! [Goaccess](https://goaccess.io/) is a nifty tool which processes logs from components like NGINX and can produce nice HTML outputs and graphs. These are exposed via `/goaccess_<service>.html` from NGINX via some funky script usage and Podman volumes.
 
-* [goaccess_dbms.conf](goaccess_dbms.conf)  
-Goaccess configuration for processing ArangoDB access.
 * [goaccess_web.conf](goaccess_web.conf)  
 Goaccess configuration for processing TDM Web UI access.
 * [goaccess_kibana.conf](goaccess_kibana.conf)  
