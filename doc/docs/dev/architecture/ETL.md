@@ -12,8 +12,8 @@ The ETL code converts source data to the format of TDM's database schema. TDM's 
 An inspiration to `pyang`, `pysmi` does for MIBs what `pyang` does for YANG modules. We use `pysmi` to parse MIBs into OIDs and structured into JSON which we then parse to load into TDM.
 * [elasticsearch](https://github.com/elastic/elasticsearch-py)  
 Low level client for Elasticsearch. We had some difficulty using the Elasticsearch DSL library and sometimes it's easiest to use low-level abstractions.
-* [pyArango](https://github.com/tariqdaouda/pyArango)  
-Use [python-arango](https://github.com/joowani/python-arango) instead. For some reason this is recommended by ArangoDB in some tutorials, and we decided to use `pyArango` in ETL and `python-arango` in [Web](Web.html) purely for comparison of the libraries. `python-arango` has won our hearts, and pyArango is questionably maintained. [1](https://github.com/tariqdaouda/pyArango/issues/105) [2](https://github.com/tariqdaouda/pyArango/issues/111)
+* [psycopg2](https://www.psycopg.org/)  
+PostgreSQL client library, same one used by [Web](Web.html). ETL connects with a single blocking `psycopg2.connect()` (retried until Postgres accepts connections) rather than Web's pooled connections, since ETL is a one-shot batch process rather than a long-running server. ETL also executes `etl/src/schema.sql` once, on first run, to create the database schema.
 
 ## Process
 The ETL process is simply a sequential series of steps right now.
@@ -40,7 +40,7 @@ The YANG module loading process is far more complete than the MIBs. This is than
 You might notice the weird `Release -&- Data Model Language -> Data Model` specified here. This is a potential reflection of a flaw in TDM's schema design. Currently Data Models are linked to both Releases and Data Model Languages as those both "own" the Data Models in some sense and can't be linearly expressed. The Data Model Language could be a attributes of the Data Models themselves instead of (or alongside!) actual entities but currently this works out as is and requires some more thought.
 
 ### Into Elasticsearch!
-Once MIBs and YANG modules are loaded into ArangoDB we denormalize all those relationships and load denormalized documents into [Search](Search.html) to fuel search capabilities in the [Web](Web.html) interface. We index nearly every property, but only use the `human_id`, `machine_id`, and `description` of each DataPath for searching. This results in several million documents in [Search](Search.html).
+Once MIBs and YANG modules are loaded into PostgreSQL we denormalize all those relationships and load denormalized documents into [Search](Search.html) to fuel search capabilities in the [Web](Web.html) interface. We index nearly every property, but only use the `human_id`, `machine_id`, and `description` of each DataPath for searching. This results in several million documents in [Search](Search.html). This stage streams a single flattening SQL query (`etl/src/search.py`'s `DATAPATH_QUERY`) through a server-side cursor.
 
 ## Directory Structure
 

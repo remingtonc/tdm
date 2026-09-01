@@ -1,20 +1,20 @@
 # Database
-TDM's parsed source-of-truth resides in ArangoDB. ArangoDB is a powerful graph database which enables NoSQL-like storage models and relational queries.
+TDM's parsed source-of-truth resides in PostgreSQL. It's a normalized relational schema in a dedicated `tdm` schema (not `public`, so the database can host other apps alongside TDM) — entities are tables with surrogate `BIGINT` primary keys, and relationships between them are foreign key columns or small join tables.
 
 [[toc]]
 
 ## Schema
-TDM has a relatively simple schema. ArangoDB helps express it simply as well.
+TDM has a relatively simple schema.
 
 ![Database Schema Image](/doc/img/tdm_schema.png)
 
-### Entities (Collections)
+### Tables (Entities)
 
-#### DataPath
+#### data_path
 The most basic representation of a "path" to data which can be transformed and formatted for control protocols to retrieve the data.
 
 * **machine_id**  
-The path/identifier which is qualified, unique, and most used by definition in the machine. The machine_id must be unique in the system.
+The path/identifier which is qualified, unique, and most used by definition in the machine. `machine_id` is `UNIQUE NOT NULL`.
 * human_id  
 The path/identifier which is colloquially used by humans to communicate the data path.
 * description  
@@ -27,127 +27,124 @@ Whether the data path is unable to be directly indexed.
 Whether the data path represents something which is able to be configured. Effectively, a "write" property.
 * verified  
 Whether the data path has been verified and should absolutely be trusted. If it is not verified, there is a potential for it to be in error.
+* parent_id  
+Self-referencing foreign key to another `data_path` row, for parent/child DataPath relationships.
+* data_type_id  
+Foreign key to `data_type`.
+* search_vector  
+A `tsvector` `GENERATED ALWAYS AS ... STORED` column, weighted A/B/C over `human_id`/`machine_id`/`description`, backed by a GIN index.
 
-#### DataModel
+#### data_model
 The data model which provides the definition/schema of available data which we may derive DataPaths to.
 
 * content  
-The unparsed content of the data model.
+The unparsed content of the data model. Carried forward for fidelity; unused by any current ETL path.
 * **name**  
-The name or filename of the data model.
+The name or filename of the data model. Combined with `revision`, `UNIQUE (name, revision)`.
 * **parsed_checksum**  
 The checksum of the data paths parsed from the data model. This is not currently implemented.
 * **revision**  
 The revision of the data model.
+* data_model_language_id  
+Foreign key to `data_model_language`.
+* parent_id  
+Self-referencing foreign key to another `data_model` row, for revision parent/child relationships.
 
-#### DataModelLanguage
+#### data_model_language
 The known and defined language of data modeling which a DataModel is written in.
 
 * **name**
 * description
 
-#### OS
+#### os
 The operating system which DataModels may apply to.
 
 * **name**  
-e.g. IOS XR
+e.g. IOS XE
 * description
 
-#### Release
+#### release
 The OS Release which DataModels may apply to.
 
+* os_id  
+Foreign key to `os`.
 * **name**  
-e.g. 6.5.1
+e.g. 6.5.1. Combined with `os_id`, `UNIQUE (os_id, name)`.
 * description
+* previous_release_id  
+Self-referencing foreign key to the prior `release` row in the same OS's revision chain; walk it with a recursive CTE if a full chain is needed.
 
-#### ControlProtocol
+#### control_protocol
 The known and defined protocol which is capable of transforming or utilizing DataModels or DataPaths to retrieve data.
 
 * **name**  
 e.g. NETCONF
 * description
 
-#### TransportProtocol
+#### transport_protocol
 The known and defined protocol which a ControlProtocol may operate over.
 
 * **name**  
 e.g. HTTP
 * description
 
-#### Encoding
+#### encoding
 The encoding of the data which a DataPath is communicated via a ControlProtocol and over the TransportProtocol.
 
 * **name**  
 e.g. JSON
 * description
-  
-#### DataType
+
+#### data_type
 The defined data type that a data point in a DataPath is defined to return.
 
-* **name**
+* data_model_language_id  
+Foreign key to `data_model_language`.
+* **name**  
+Combined with `data_model_language_id`, `UNIQUE (data_model_language_id, name)`.
 * description
 * is_primitive
 
-#### Device
-A physical device which may have data models and should have corresponding data paths.
-
-* **name**
-* description
-
-#### Calculation
+#### calculation
 A defined calculation which may be used to indicate that a DataPath is calculated via other DataPaths. This does not attempt to maintain order of operations. Order of operations must be maintained in the equation/description and will not automatically apply.
 
-* name  
-An apt naming for the calculation, for human consumption.
+* **name**  
+An apt naming for the calculation, for human consumption. `UNIQUE NOT NULL`.
 * description
 * equation
 * author
 
-### Relationships (Edges)
+### Relationships (Foreign Keys & Join Tables)
 
-#### DeviceHasDataPath
-Indicates that it has been validated that a Device does have a specified DataPath available.
+#### release.os_id
+Indicates that it has been validated that an OS does have a specified Release.
 
-* os
-* release
+#### release_data_model
+Indication that, theoretically, a specific Release should have a DataModel. Two-column join table (`release_id`, `data_model_id`).
 
-#### DeviceHasDataModel
-Indicates that it has been validated that a Device does have a specified DataModel.
-
-* os
-* release
-
-#### OSHasRelease
-OS ownership of a specific Release name.
-
-#### ReleaseHasDataModel
-Indication that, theoretically, a specific Release should have a DataModel.
-
-#### ReleaseRevision
+#### release.previous_release_id
 Indicates that a Release is a revision of another Release.
 
-#### DataPathFromDataModel
-Indicates that a specific DataPath is derivative of a certain DataModel.
+#### data_path_source
+Indicates that a specific DataPath is derivative of a certain DataModel. Join table with an extra `parse_timestamp TIMESTAMPTZ` column.
 
-* parse_timestamp
-
-#### OfDataModelLanguage
+#### data_model.data_model_language_id
 Indicates that a DataModel is written in the linked DataModelLanguage.
 
-#### HasControlProtocol
-Indicates that a DataModelLanguage may be manipulated by the linked ControlProtocol.
+#### data_model_language_control_protocol
+Indicates that a DataModelLanguage may be manipulated by the linked ControlProtocol. Join table.
 
-#### HasEncoding
-Indicates that a ControlProtocol supports the linked Encoding.
+#### control_protocol_encoding
+Indicates that a ControlProtocol supports the linked Encoding. Join table.
 
-#### HasTransportProtocol
-Indicates that a ControlProtocol supports the linked TransportProtocol.
+#### control_protocol_transport_protocol
+Indicates that a ControlProtocol supports the linked TransportProtocol. Join table.
 
-#### DataPathMatch
-Indicates that the linked DataPaths are equivalent.
+#### data_path_match
+Indicates that the linked DataPaths are equivalent. Logically undirected — enforced via `data_path_a_id`/`data_path_b_id` plus `CHECK (data_path_a_id < data_path_b_id)` and a `UNIQUE (data_path_a_id, data_path_b_id)` constraint, so `(A,B)` and `(B,A)` can't both be inserted.
 
-* timestamp  
-Time of match indication.
+* created_at  
+Time of match indication. `TIMESTAMPTZ DEFAULT now()`.
 * author  
 Submitter of match.
 * validated  
@@ -159,874 +156,280 @@ Human consumable annotation of match.
 * needs_human  
 Indicates incompatible for machine consumption.
 
-#### DataPathParent
-Indicates that a DataPath is a parent of another DataPath.
+#### data_path.parent_id
+Indicates that a DataPath is a parent/child of another DataPath.
 
-#### DataPathChild
-Indicates that a DataPath is a child of another DataPath.
-
-#### OfDataType
+#### data_path.data_type_id
 Indicates that a DataPath is of data type DataType.
 
-* parse_timestamp
+#### data_model.parent_id
+Demonstrates revision parent/child relationships in DataModels.
 
-#### DataModelChild
-Demonstrates revision child relationships in DataModels.
+#### calculation_input
+Indicates that a DataPath is an input to the specified Calculation. Join table.
 
-#### DataModelParent
-Demonstrates revision parent relationships in DataModels.
+#### calculation_result
+Indicates that a DataPath is a result of the specified Calculation. Join table.
 
-#### DataModelDerivedFrom
-Indicates that this DataModel is not a standalone DataModel and is actually converted or generated from the existing, linked DataModel.
+## Example SQL
+Queries below are drawn directly from `web/src/web/views.py` and `etl/src/search.py` where a matching implementation exists (noted per section), plus a few illustrative queries for common patterns that don't have a single dedicated function today. All examples assume the connection's `search_path` is set to `tdm` (see [Web](Web.html) and [ETL](ETL.html)), so table names are unqualified.
 
-#### InCalculation
-Indicates that a DataPath is within the specified Calculation.
+### Filtered DataPath Search
+`fetch_search_data_paths` (`web/src/web/views.py:656`) is what backs the primary structured search API (`/api/v1/search`). It filters on `(os, release)` pairs, DataModelLanguage names, leaf/configurable flags, and — when a filter string is given — full-text search over `data_path.search_vector` using `plainto_tsquery`.
 
-#### CalculationResult
-Indicates that a DataPath is a result of the specified Calculation.
-
-#### DataModelLanguageHasDataType
-Indicates that a DataType is defined within a DataModelLanguage.
-
-## Example AQL
-Queries that are usable in the ArangoDB UI. Outputs are all examples. HIGHLY recommend usage of `LIMIT` statements at reasonable points of the query. None of these queries are guaranteed to be "the best." :)
-
-## Retrievals
-
-### Filtered DataPath Leaves
-
-#### Query
-AQL Fulltext searches utilize characters like `-`, `+`, and `.` in the mini-language to indicate "logical not", etc. Commas indicate terminology to filter on. This query will first return all results with all elements of the filter string, and then ensure that the filter string itself is within the results. This ensures that our exact filter string is present and prevents arbitrary ordering issues.
-
-```
-LET filter_string = "Cisco-IOS-XE"
-FOR dp IN FULLTEXT(DataPath, "human_id", SUBSTITUTE(filter_string, "-", ","))
-  FILTER CONTAINS(dp.human_id, filter_string)
-  LIMIT 10
-  RETURN dp.human_id
+```sql
+SELECT os.name AS os_name, release.name AS release_name,
+       dml.name AS dml_name, dm.name AS dm_name,
+       dp.data_path_id, dp.human_id
+FROM data_path dp
+JOIN data_path_source dps ON dps.data_path_id = dp.data_path_id
+JOIN data_model dm ON dm.data_model_id = dps.data_model_id
+JOIN data_model_language dml ON dml.data_model_language_id = dm.data_model_language_id
+JOIN release_data_model rdm ON rdm.data_model_id = dm.data_model_id
+JOIN release ON release.release_id = rdm.release_id
+JOIN os ON os.os_id = release.os_id
+WHERE (os.name, release.name) IN (('IOS XR', '6.3.1'))
+  AND dml.name = ANY(ARRAY['YANG'])
+  AND dp.is_leaf = TRUE
+  AND dp.search_vector @@ plainto_tsquery('simple', 'openconfig interface')
+  AND dp.is_configurable = FALSE
+ORDER BY dp.human_id
+LIMIT 3 OFFSET 0
 ```
 
-If you want to search for general terminology, which isn't DataPath specific, then this too will work.
-
-```
-LET filter_string = "bgp"
-FOR dp IN FULLTEXT(DataPath, "human_id", filter_string)
-  LIMIT 10
-  RETURN dp.human_id
-```
+Rows come back flat; the view groups them into an `OS → Release → DataModelLanguage → DataModel → [DataPath]` nested dict in Python (`views.py:703-709`).
 
 #### Output
 ```json
-[
-  "Cisco-IOS-XE-bgp-oper:bgp-state/neighbors/neighbor/afi-safi",
-  "Cisco-IOS-XE-bgp-oper:bgp-state/neighbors/neighbor/vrf-name",
-  "Cisco-IOS-XE-bgp-oper:bgp-state/neighbors/neighbor/neighbor-id",
-  "Cisco-IOS-XE-bgp-oper:bgp-state/neighbors/neighbor/description",
-  "Cisco-IOS-XE-bgp-oper:bgp-state/neighbors/neighbor/bgp-version",
-  "Cisco-IOS-XE-bgp-oper:bgp-state/neighbors/neighbor/link",
-  "Cisco-IOS-XE-bgp-oper:bgp-state/neighbors/neighbor/up-time",
-  "Cisco-IOS-XE-bgp-oper:bgp-state/neighbors/neighbor/last-write",
-  "Cisco-IOS-XE-bgp-oper:bgp-state/neighbors/neighbor/last-read",
-  "Cisco-IOS-XE-bgp-oper:bgp-state/neighbors/neighbor/installed-prefixes"
-]
-```
-
-### OS and Releases
-
-#### Query
-```
-RETURN MERGE(
-  FOR os IN OS
-    RETURN {
-      [ os.name ]: FLATTEN(
-        FOR os_release IN OSHasRelease
-          FILTER os_release._from == os._id
-          RETURN (
-            FOR release in Release
-              FILTER os_release._to == release._id
-              RETURN release.name
-          )
-      )
-    }
-)
-```
-
-#### Output
-```json
-[
-  {
-    "IOS XE": [
-      "16.3.1",
-      "16.7.1",
-      "16.6.2",
-      "16.6.1",
-      "16.5.1",
-      "16.4.1",
-      "16.3.2"
-    ]
-  }
-]
-```
-
-### OS/Release Owned DataModels
-
-#### Query
-```
-FOR os IN OS
-  LIMIT 1
-  RETURN {
-    [ os.name ]: MERGE(
-      FOR os_release IN OSHasRelease
-        FILTER os_release._from == os._id
-        LIMIT 2
-        RETURN MERGE(
-          FOR release IN Release
-            FILTER os_release._to == release._id
-            RETURN {
-              [ release.name ]: FLATTEN(
-                FOR release_model IN ReleaseHasDataModel
-                  FILTER release_model._from == release._id
-                  LIMIT 5
-                  RETURN (
-                    FOR dm IN DataModel
-                      FILTER release_model._to == dm._id
-                      RETURN CONCAT_SEPARATOR("@", dm.name, dm.revision)
-                  )
-              )
-            }
-        )
-    )
-  }
-```
-
-#### Output
-```json
-[
-  {
-    "IOS XE": {
-      "16.3.1": [],
-      "16.7.1": [
-        "openconfig-network-instance-types@2016-12-15",
-        "tailf-confd-monitoring@2013-06-14",
-        "Cisco-IOS-XE-diffserv-target-oper@2017-02-09",
-        "cisco-xe-ietf-event-notifications-deviation@2017-08-22",
-        "cisco-xe-ietf-yang-push-deviation@2017-08-22"
-      ]
-    }
-  }
-]
-```
-
-### OS/Release Owned DataModels and DataPaths
-
-#### Query
-```
-RETURN MERGE(
-  FOR os IN OS
-    LIMIT 1
-    RETURN {
-      [ os.name ]: MERGE(FLATTEN(
-        FOR os_release IN OSHasRelease
-          FILTER os_release._from == os._id
-          LIMIT 2
-          RETURN MERGE(
-            FOR release IN Release
-              FILTER os_release._to == release._id
-              RETURN {
-                [ release.name ]: MERGE(FLATTEN(
-                  FOR release_model IN ReleaseHasDataModel
-                    FILTER release_model._from == release._id
-                    LIMIT 5
-                    RETURN MERGE(
-                      FOR dm IN DataModel
-                        FILTER release_model._to == dm._id
-                        RETURN {
-                          [ CONCAT_SEPARATOR("@", dm.name, dm.revision) ]: FLATTEN(
-                            FOR model_dp IN DataPathFromDataModel
-                              FILTER model_dp._from == dm._id
-                              LIMIT 2
-                              RETURN FLATTEN(
-                                FOR dp IN DataPath
-                                  FILTER model_dp._to == dp._id
-                                  RETURN dp.human_id
-                              )
-                          )
-                        }
-                    )
-                ))
-              }
-          )
-      ))
-    }
-)
-```
-
-#### Output
-```json
-[
-  {
-    "IOS XE": {
-      "16.3.1": {},
-      "16.7.1": {
-        "Cisco-IOS-XE-diffserv-target-oper@2017-02-09": [
-          "Cisco-IOS-XE-diffserv-target-oper:diffserv-interfaces-state",
-          "Cisco-IOS-XE-diffserv-target-oper:diffserv-interfaces-state/diffserv-interface/diffserv-target-entry/diffserv-target-classifier-statistics/queuing-statistics/wred-stats/early-drop-bytes"
-        ],
-        "cisco-xe-ietf-event-notifications-deviation@2017-08-22": [],
-        "cisco-xe-ietf-yang-push-deviation@2017-08-22": [],
-        "openconfig-network-instance-types@2016-12-15": [],
-        "tailf-confd-monitoring@2013-06-14": [
-          "tailf-confd-monitoring:confd-state",
-          "tailf-confd-monitoring:confd-state/internal/cdb/client/subscription/error"
+{
+  "IOS XR": {
+    "6.3.1": {
+      "YANG": {
+        "openconfig-interfaces": [
+          {"data_path_id": 937777, "human_id": "openconfig-interfaces:interfaces/interface/aggregation/state/lag-speed"}
         ]
       }
     }
   }
-]
+}
 ```
 
-### OS/Release DataPaths
+### OS and Releases
+Backs the search form's OS/Release picker. `fetch_os_releases` (`web/src/web/views.py:722`):
 
-#### Query
-```
-RETURN MERGE(
-  FOR os IN OS
-    LIMIT 2
-    RETURN {
-      [ os.name ]: MERGE(FLATTEN(
-        FOR os_release IN OSHasRelease
-        FILTER os_release._from == os._id
-        LIMIT 2
-        RETURN (
-          FOR release IN Release
-          FILTER os_release._to == release._id
-          RETURN {
-            [ release.name ]: FLATTEN(
-              FOR release_model IN ReleaseHasDataModel
-              FILTER release_model._from == release._id
-              LIMIT 2
-              RETURN FLATTEN(
-                FOR dm IN DataModel
-                FILTER release_model._to == dm._id
-                RETURN FLATTEN(
-                  FOR model_dp IN DataPathFromDataModel
-                  FILTER model_dp._from == dm._id
-                  LIMIT 2
-                  RETURN FLATTEN(
-                    FOR dp IN DataPath
-                    FILTER model_dp._to == dp._id
-                    RETURN dp.human_id
-                  )
-                )
-              )
-            )
-          }
-        )
-      ))
-    }
-)
+```sql
+SELECT os.name AS os_name, release.name AS release_name
+FROM os
+JOIN release USING (os_id)
+ORDER BY os.name ASC, release.name DESC
 ```
 
 #### Output
-```json
-[
-  {
-    "IOS XE": {
-      "16.3.1": [],
-      "16.7.1": [
-        "tailf-confd-monitoring:confd-state",
-        "tailf-confd-monitoring:confd-state/internal/cdb/client/subscription/error"
-      ]
-    },
-    "IOS XR": {
-      "5.3.0": [],
-      "6.3.1": [
-        "Cisco-IOS-XR-config-mda-cfg:apply-group",
-        "Cisco-IOS-XR-config-mda-cfg:preconfigured-nodes/preconfigured-node/clock-interface/clocks/clock/port"
-      ]
-    }
-  }
-]
+```
+IOS XE - 16.7.1
+IOS XE - 16.6.2
+IOS XR - 6.3.1
+IOS XR - 5.3.0
+```
+
+### OS/Release Owned DataModels
+Illustrative — walks the same join path as the search query above but stops at `data_model`, without touching `data_path`:
+
+```sql
+SELECT os.name AS os_name, release.name AS release_name, dm.name, dm.revision
+FROM data_model dm
+JOIN release_data_model rdm ON rdm.data_model_id = dm.data_model_id
+JOIN release ON release.release_id = rdm.release_id
+JOIN os ON os.os_id = release.os_id
+WHERE os.name = 'IOS XE' AND release.name = '16.7.1'
+ORDER BY dm.name
+LIMIT 5
 ```
 
 ### Common OS/Release DataPaths
-Intersects IOS XR 6.3.1 and IOS XE 16.7.1 data paths.
+Intersects the DataPaths belonging to two different OS/Release pairs, using `INTERSECT`:
 
-#### Query
-```
-LET xe_dps = FLATTEN(
-  FOR os IN OS
-  FILTER os.name == "IOS XE"
-    RETURN FLATTEN(
-      FOR os_release IN OSHasRelease
-        FILTER os_release._from == os._id
-        RETURN FLATTEN(
-          FOR release IN Release
-            FILTER os_release._to == release._id && release.name == "16.7.1"
-            RETURN FLATTEN(
-              FOR release_model IN ReleaseHasDataModel
-                FILTER release_model._from == release._id
-                RETURN FLATTEN(
-                  FOR dm IN DataModel
-                    FILTER release_model._to == dm._id
-                    FOR model_dp IN DataPathFromDataModel
-                      FILTER model_dp._from == dm._id
-                      RETURN FLATTEN(
-                        FOR dp IN DataPath
-                          FILTER model_dp._to == dp._id
-                          RETURN dp.human_id
-                      )
-                  )
-              )
-        )
-    )
-)
-LET xr_dps = FLATTEN(
-  FOR os IN OS
-  FILTER os.name == "IOS XR"
-    RETURN FLATTEN(
-      FOR os_release IN OSHasRelease
-        FILTER os_release._from == os._id
-        RETURN FLATTEN(
-          FOR release IN Release
-            FILTER os_release._to == release._id && release.name == "6.3.1"
-            RETURN FLATTEN(
-              FOR release_model IN ReleaseHasDataModel
-                FILTER release_model._from == release._id
-                RETURN FLATTEN(
-                  FOR dm IN DataModel
-                    FILTER release_model._to == dm._id
-                    FOR model_dp IN DataPathFromDataModel
-                      FILTER model_dp._from == dm._id
-                      RETURN FLATTEN(
-                        FOR dp IN DataPath
-                          FILTER model_dp._to == dp._id
-                          RETURN dp.human_id
-                      )
-                  )
-              )
-        )
-    )
-)
-RETURN INTERSECTION(xe_dps, xr_dps)
-```
+```sql
+SELECT dp.human_id
+FROM data_path dp
+JOIN data_path_source dps ON dps.data_path_id = dp.data_path_id
+JOIN release_data_model rdm ON rdm.data_model_id = dps.data_model_id
+JOIN release ON release.release_id = rdm.release_id
+JOIN os ON os.os_id = release.os_id
+WHERE os.name = 'IOS XE' AND release.name = '16.7.1'
 
-#### Output
-```json
-[
-  [
-    "ietf-interfaces:interfaces-state/interface/statistics/in-pkts",
-    "ietf-interfaces:interfaces-state/interface/statistics/out-pkts",
-    "ietf-interfaces:interfaces-state/interface/routing-instance",
-    "ietf-interfaces:interfaces-state/interface/pseudowire/neighbor-ip-address",
-    "ietf-interfaces:interfaces-state/interface/pseudowire/vc-id",
-    "ietf-interfaces:interfaces-state/interface/ethernet/duplex",
-    ...
-  ]
-]
+INTERSECT
+
+SELECT dp.human_id
+FROM data_path dp
+JOIN data_path_source dps ON dps.data_path_id = dp.data_path_id
+JOIN release_data_model rdm ON rdm.data_model_id = dps.data_model_id
+JOIN release ON release.release_id = rdm.release_id
+JOIN os ON os.os_id = release.os_id
+WHERE os.name = 'IOS XR' AND release.name = '6.3.1'
 ```
 
 ### Retrieve Matching DataPaths
+Backs Matchmaker (`/matches`). `fetch_matches` (`web/src/web/views.py:266`) resolves each given `human_id`/`machine_id` to a `data_path_id`, then per DataPath:
 
-#### Query
-```
-LET given_dps = @given_dps
-FOR dp IN DataPath
-    FILTER dp.human_id IN @given_dps || dp.machine_id IN @given_dps
-    LET result = {
-        "_key": dp._key,
-        "human_id": dp.human_id,
-        "machine_id": dp.machine_id,
-        "matches": FLATTEN(
-            FOR dp_eq IN DataPathMatch
-                FILTER dp_eq._from == dp._id || dp_eq._to == dp._id
-                LET tdm_dp = dp_eq._from == dp._id ? DOCUMENT(dp_eq._to) : DOCUMENT(dp_eq._from)
-                SORT tdm_dp.human_id
-                RETURN {
-                    "_key": tdm_dp._key,
-                    "human_id": tdm_dp.human_id,
-                    "machine_id": tdm_dp.machine_id
-                }
-        )
-    }
-    FILTER LENGTH(result.matches) != 0
-    SORT result.human_id
-    RETURN result
+```sql
+SELECT other.data_path_id, other.human_id, other.machine_id
+FROM data_path_match dpm
+JOIN data_path other ON other.data_path_id =
+    CASE WHEN dpm.data_path_a_id = %(id)s
+         THEN dpm.data_path_b_id ELSE dpm.data_path_a_id END
+WHERE dpm.data_path_a_id = %(id)s OR dpm.data_path_b_id = %(id)s
+ORDER BY other.human_id
 ```
 
-#### Output
-```json
-[
-  {
-    "_key": "8759",
-    "human_id": "ifHCOutMulticastPkts",
-    "machine_id": "1.3.6.1.2.1.31.1.1.1.12",
-    "matches": [
-      {
-        "_key": "4931200",
-        "human_id": "Cisco-IOS-XR-infra-statsd-oper:infra-statistics/interfaces/interface/latest/generic-counters",
-        "machine_id": "Cisco-IOS-XR-infra-statsd-oper/infra-statsd-oper:infra-statistics/infra-statsd-oper:interfaces/infra-statsd-oper:interface/infra-statsd-oper:latest/infra-statsd-oper:generic-counters"
-      },
-      {
-        "_key": "4931336",
-        "human_id": "Cisco-IOS-XR-infra-statsd-oper:infra-statistics/interfaces/interface/latest/generic-counters/multicast-packets-sent",
-        "machine_id": "Cisco-IOS-XR-infra-statsd-oper/infra-statsd-oper:infra-statistics/infra-statsd-oper:interfaces/infra-statsd-oper:interface/infra-statsd-oper:latest/infra-statsd-oper:generic-counters/infra-statsd-oper:multicast-packets-sent"
-      },
-      {
-        "_key": "4931336",
-        "human_id": "Cisco-IOS-XR-infra-statsd-oper:infra-statistics/interfaces/interface/latest/generic-counters/multicast-packets-sent",
-        "machine_id": "Cisco-IOS-XR-infra-statsd-oper/infra-statsd-oper:infra-statistics/infra-statsd-oper:interfaces/infra-statsd-oper:interface/infra-statsd-oper:latest/infra-statsd-oper:generic-counters/infra-statsd-oper:multicast-packets-sent"
-      }
-    ]
-  }
-]
-```
+The `CASE`/`OR` pair reflects that `data_path_match` stores each pair once, undirected (`a_id < b_id`), rather than as two separate directed rows.
 
 ### Retrieve DataPath Calculations
+Backs `/calculations*`. `_calcs_as_result`/`_calcs_as_factor` (`web/src/web/views.py:319` and `:340`) use two focused queries per direction:
 
-#### Query
-```
-WITH DataPath, Calculation
-LET given_dps = @given_dps
-FOR dp IN DataPath
-FILTER dp.human_id IN given_dps || dp.machine_id IN given_dps
-LET result = {
-    "_key": dp._key,
-    "human_id": dp.human_id,
-    "machine_id": dp.machine_id,
-    "calculations": {
-    "as_result": (
-        FOR calc_result IN CalculationResult
-        FILTER calc_result._to == dp._id
-        LET calculation = DOCUMENT(calc_result._from)
-        RETURN {
-            "_key": calculation._key,
-            "name": calculation.name,
-            "result": {
-            "_key": dp._key,
-            "human_id": dp.human_id,
-            "machine_id": dp.machine_id
-            },
-            "factors": (
-            FOR calc_factor IN InCalculation
-                FILTER calc_factor._to == calculation._id
-                LET factor_dp = DOCUMENT(calc_factor._from)
-                RETURN {
-                "_key": factor_dp._key,
-                "human_id": factor_dp.human_id,
-                "machine_id": factor_dp.machine_id
-                }
-            )
-        }
-    ),
-    "as_factor": (
-        FOR calc_factor IN InCalculation
-        FILTER calc_factor._from == dp._id
-        LET calculation = DOCUMENT(calc_factor._to)
-        RETURN {
-            "_key": calculation._key,
-            "name": calculation.name,
-            "result": FIRST(
-            FOR result IN CalculationResult
-                FILTER calculation._id == result._from
-                LET result_dp = DOCUMENT(result._to)
-                RETURN {
-                "_key": result_dp._key,
-                "human_id": result_dp.human_id,
-                "machine_id": result_dp.machine_id
-                }
-            ),
-            "factors": (
-            FOR calc_calc_factor IN InCalculation
-                FILTER calc_calc_factor._to == calculation._id
-                LET factor_dp = DOCUMENT(calc_calc_factor._from)
-                RETURN {
-                "_key": factor_dp._key,
-                "human_id": factor_dp.human_id,
-                "machine_id": factor_dp.machine_id
-                }
-            )
-        }
-    )
-    }
-}
-FILTER LENGTH(result.calculations.as_result) != 0 || LENGTH(result.calculations.as_factor) != 0
-SORT result.human_id
-RETURN result
-```
+```sql
+-- Calculations where this DataPath is the result
+SELECT calc.calculation_id, calc.name
+FROM calculation_result cr
+JOIN calculation calc USING (calculation_id)
+WHERE cr.data_path_id = %s;
 
-#### Output
-```json
-[
-  {
-    "_key": "8719",
-    "human_id": "ifHCInUcastPkts",
-    "machine_id": "1.3.6.1.2.1.31.1.1.1.7",
-    "calculations": {
-      "as_result": [
-        {
-          "_key": "13113704",
-          "name": "Inbound Unicast Packets YANG <-> SNMP",
-          "result": {
-            "_key": "8719",
-            "human_id": "ifHCInUcastPkts",
-            "machine_id": "1.3.6.1.2.1.31.1.1.1.7"
-          },
-          "factors": [
-            {
-              "_key": "4931216",
-              "human_id": "Cisco-IOS-XR-infra-statsd-oper:infra-statistics/interfaces/interface/latest/generic-counters/packets-received",
-              "machine_id": "Cisco-IOS-XR-infra-statsd-oper/infra-statsd-oper:infra-statistics/infra-statsd-oper:interfaces/infra-statsd-oper:interface/infra-statsd-oper:latest/infra-statsd-oper:generic-counters/infra-statsd-oper:packets-received"
-            },
-            {
-              "_key": "4931296",
-              "human_id": "Cisco-IOS-XR-infra-statsd-oper:infra-statistics/interfaces/interface/latest/generic-counters/multicast-packets-received",
-              "machine_id": "Cisco-IOS-XR-infra-statsd-oper/infra-statsd-oper:infra-statistics/infra-statsd-oper:interfaces/infra-statsd-oper:interface/infra-statsd-oper:latest/infra-statsd-oper:generic-counters/infra-statsd-oper:multicast-packets-received"
-            },
-            {
-              "_key": "4931316",
-              "human_id": "Cisco-IOS-XR-infra-statsd-oper:infra-statistics/interfaces/interface/latest/generic-counters/broadcast-packets-received",
-              "machine_id": "Cisco-IOS-XR-infra-statsd-oper/infra-statsd-oper:infra-statistics/infra-statsd-oper:interfaces/infra-statsd-oper:interface/infra-statsd-oper:latest/infra-statsd-oper:generic-counters/infra-statsd-oper:broadcast-packets-received"
-            }
-          ]
-        }
-      ],
-      "as_factor": []
-    }
-  }
-]
+-- ...then, per calculation, its inputs:
+SELECT factor.data_path_id, factor.human_id, factor.machine_id
+FROM calculation_input ci
+JOIN data_path factor ON factor.data_path_id = ci.data_path_id
+WHERE ci.calculation_id = %s;
 ```
 
 ### Retrieve Unmatched DataPaths
+Illustrative — DataPaths given by `human_id` that have neither a `data_path_match` row nor a `calculation_result` row:
 
-#### Query
+```sql
+SELECT dp.human_id
+FROM data_path dp
+WHERE dp.human_id = ANY(%(given_dps)s)
+  AND NOT EXISTS (
+      SELECT 1 FROM data_path_match dpm
+      WHERE dpm.data_path_a_id = dp.data_path_id OR dpm.data_path_b_id = dp.data_path_id
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM calculation_result cr WHERE cr.data_path_id = dp.data_path_id
+  )
 ```
-LET given_dps = @given_dps
-LET matched_dps = FLATTEN(
-  FOR given_dp IN given_dps
-    RETURN FLATTEN(
-      FOR dp IN DataPath
-        FILTER dp.human_id == given_dp
-        RETURN (
-          FOR dp_eq IN DataPathMatch
-            FILTER dp_eq._from == dp._id || dp_eq._to == dp._id
-            RETURN dp.human_id
-        )
-    )
-)
-LET calculated_dps = FLATTEN(
-  FOR given_dp IN given_dps
-    RETURN FLATTEN(
-      FOR dp IN DataPath
-        FILTER dp.human_id == given_dp
-        RETURN FLATTEN(
-         FOR calc_result IN CalculationResult
-          FILTER calc_result._to == dp._id
-          RETURN dp.human_id
-        )
-    )
-)
-RETURN MINUS(given_dps, linked_dps, calculated_dps)
+
+### Retrieve Table Counts
+Backs the home page stats. `fetch_collection_counts` (`web/src/web/views.py:446`) issues one `COUNT(*)` per requested table name, resolved through a fixed allow-list (`_COLLECTION_COUNT_TABLES`, `views.py:440`) rather than interpolating client-supplied table names directly:
+
+```sql
+SELECT COUNT(*) AS count FROM data_path;
+SELECT COUNT(*) AS count FROM data_model;
+SELECT COUNT(*) AS count FROM release;
 ```
 
 #### Output
 ```json
-[
-  "asdf"
-]
-```
-
-### Retrieve Collection Counts
-
-#### Query
-```
-LET given_collections = @given_collections
-RETURN MERGE(
-  FOR collection IN given_collections
-    RETURN {
-      [ collection ]: COLLECTION_COUNT(collection)
-    }
-)
-```
-
-#### Output
-```json
-[
-  {
-    "DataModel": 1760,
-    "Release": 31,
-    "DataPath": 554322
-  }
-]
+{"DataPath": 554322, "DataModel": 1760, "Release": 31}
 ```
 
 ### Retrieve OS/Releases linked to a DataPath
+Backs the DataPath detail page. `fetch_datapath_os_graph` (`web/src/web/views.py:125`) is a fixed-depth join chain, since the DataPath → DataModel → Release → OS depth is always known:
 
-#### Query
-```
-WITH OS, Release, DataModel, DataPath
-FOR os IN OS
-  FOR v, e, p
-    IN 3..3
-    OUTBOUND os._id
-    OSHasRelease, ReleaseHasDataModel, DataPathFromDataModel
-    FILTER p.vertices[3]._key == @dp_key
-    RETURN {
-        'os': p.vertices[0].name,
-        'release': p.vertices[1].name
-    }
-```
-
-#### Output
-```json
-[
-  {
-    "os": "IOS XE",
-    "release": "16.7.1"
-  },
-  {
-    "os": "IOS XE",
-    "release": "16.6.2"
-  },
-  {
-    "os": "IOS XE",
-    "release": "16.6.1"
-  },
-  {
-    "os": "IOS XR",
-    "release": "6.3.1"
-  },
-  {
-    "os": "IOS XR",
-    "release": "6.2.2"
-  },
-  {
-    "os": "NX-OS",
-    "release": "7.0(3)I7(3)"
-  },
-  {
-    "os": "NX-OS",
-    "release": "7.0(3)I7(2)"
-  },
-  {
-    "os": "NX-OS",
-    "release": "7.0(3)I7(1)"
-  },
-  {
-    "os": "NX-OS",
-    "release": "7.0(3)I6(2)"
-  },
-  {
-    "os": "NX-OS",
-    "release": "7.0(3)I6(1)"
-  },
-  {
-    "os": "NX-OS",
-    "release": "7.0(3)I5(2)"
-  },
-  {
-    "os": "NX-OS",
-    "release": "7.0(3)I5(1)"
-  }
-]
+```sql
+SELECT dm.name AS datamodel_name, dm.revision AS datamodel_revision,
+       release.name AS os_release, os.name AS os_name
+FROM data_path_source dps
+JOIN data_model dm ON dm.data_model_id = dps.data_model_id
+JOIN release_data_model rdm ON rdm.data_model_id = dm.data_model_id
+JOIN release ON release.release_id = rdm.release_id
+JOIN os ON os.os_id = release.os_id
+WHERE dps.data_path_id = %s
 ```
 
 ### Retrieve per-DataModelLanguage DataPaths with Matches
+Backs the "All Mappings" page. `fetch_all_matches` (`web/src/web/views.py:46`) joins DataModelLanguage down to DataPath, then self-joins `data_path_match`:
 
-#### Query
-```
-RETURN MERGE(
-FOR dml IN DataModelLanguage
-    RETURN {
-    [ dml.name ]: (
-        FOR v, e, p IN 3..3 OUTBOUND dml OfDataModelLanguage, DataPathFromDataModel, ANY DataPathMatch
-        SORT p.vertices[2].human_id
-        RETURN DISTINCT({
-            '_key': p.vertices[2]._key,
-            'human_id': p.vertices[2].human_id
-        })
-    )
-    }
-)
+```sql
+SELECT DISTINCT dml.name AS dml_name, dp.data_path_id, dp.human_id
+FROM data_model_language dml
+JOIN data_model dm ON dm.data_model_language_id = dml.data_model_language_id
+JOIN data_path_source dps ON dps.data_model_id = dm.data_model_id
+JOIN data_path dp ON dp.data_path_id = dps.data_path_id
+JOIN data_path_match dpm
+    ON dpm.data_path_a_id = dp.data_path_id OR dpm.data_path_b_id = dp.data_path_id
+ORDER BY dml.name, dp.human_id
 ```
 
-#### Output
-```json
-[
-  {
-    "CLI": [],
-    "DME": [],
-    "SMI": [
-      {
-        "_key": "334439",
-        "human_id": "bgpLocalAs"
-      },
-      {
-        "_key": "334495",
-        "human_id": "bgpPeerLocalAddr"
-      }
-    ],
-    "YANG": [
-      {
-        "_key": "7586776",
-        "human_id": "Cisco-IOS-XR-bundlemgr-oper:bundle-information/bundle/bundle-members/bundle-member/bundle-member-item/counters/lacpd-us-received"
-      }
-    ]
-  }
-]
+### Flattening for Elasticsearch
+The ETL's search-indexing stage flattens `DataPath` × `OS`/`Release` permutations for Elasticsearch with a single streamed SQL query, `DATAPATH_QUERY` (`etl/src/search.py:23`), read via a named/server-side cursor (`itersize = 1000`) since the result set is on the order of millions of rows:
+
+```sql
+SELECT
+    dp.data_path_id AS dp_key,
+    dp.machine_id AS dp_machine_id,
+    dp.human_id AS dp_human_id,
+    dp.description AS dp_description,
+    dp.is_leaf AS dp_is_leaf,
+    dp.is_configurable AS dp_is_configurable,
+    dml.data_model_language_id AS dml_key,
+    dml.name AS dml_name,
+    dm.data_model_id AS dm_key,
+    dm.name AS dm_name,
+    dm.revision AS dm_revision,
+    r.release_id AS release_key,
+    r.name AS release_name,
+    os.os_id AS os_key,
+    os.name AS os_name
+FROM data_path dp
+JOIN data_path_source dps ON dps.data_path_id = dp.data_path_id
+JOIN data_model dm ON dm.data_model_id = dps.data_model_id
+JOIN data_model_language dml ON dml.data_model_language_id = dm.data_model_language_id
+LEFT JOIN release_data_model rdm ON rdm.data_model_id = dm.data_model_id
+LEFT JOIN release r ON r.release_id = rdm.release_id
+LEFT JOIN os ON os.os_id = r.os_id
 ```
 
-### Search DataPaths per OS/Release/DataModelLanguage/DataModel
-This is a pretty hefty query if not used appropriately. Do not recommend searching just "bgp". This can use up to 32 GB of RAM, but has a relatively constant time-to-return window of 1-45 seconds compared to previous iterations of the query whose upper limits were indeterminate (never finished).
+See [Search](Search.html) for how this feeds the Elasticsearch index, and how it relates to PostgreSQL's own full-text search via `data_path.search_vector`.
 
-#### Query
-```
-filter_os_releases = {"IOS XR": ["6.3.1"]}
-filter_dmls = ["YANG"]
-filter_str = "openconfig interface"
-start_index = 0
-max_return_count = 3
-```
+## ArangoDB → PostgreSQL Migration
+TDM originally stored its source-of-truth in [ArangoDB](https://arangodb.com/), a graph database, and moved to PostgreSQL as part of the v3 release. This section is a reference for anyone working with data, backups, or code that predates the migration; it isn't needed to understand the current schema above.
 
-```
-LET given_os_releases = @filter_os_releases
-LET given_dmls = @filter_dmls
-LET filter_str = CONCAT_SEPARATOR(",", UNIQUE(SPLIT(SUBSTITUTE(@filter_str, [" ", "-", "/", ":"], ","), ",")))
+### Why
+ArangoDB's schema was a graph of 11 vertex ("entity") collections and 20 edge ("relationship") collections. Almost all of TDM's actual queries were manual `FOR ... FILTER x._from == y._id` joins rather than native graph traversals — only a handful of queries (the OS/Release/DataModel graph lookups) did true multi-hop traversal — so the schema didn't need ArangoDB's graph capabilities in practice, and a normalized relational schema maps onto the same structure with plain foreign keys and join tables.
 
-LET dml_ids = FLATTEN(
-    FOR dml IN DataModelLanguage
-        FILTER dml.name IN given_dmls
-        RETURN dml._id
-)
+### Collection/Edge → Table Mapping
 
-LET dml_dm_ids = FLATTEN(
-    FOR dml_dm IN OfDataModelLanguage
-        FILTER dml_dm._from IN dml_ids
-        RETURN dml_dm._to
-)
+| ArangoDB collection/edge | PostgreSQL table | Notes |
+|---|---|---|
+| `OS` | `os` | |
+| `Release` | `release` | |
+| `OSHasRelease` (edge) | `release.os_id` | Collapsed to a foreign key column. |
+| `ReleaseRevision` (edge) | `release.previous_release_id` | Collapsed a chain of edges into one self-referencing FK. |
+| `DataModelLanguage` | `data_model_language` | |
+| `ControlProtocol` | `control_protocol` | |
+| `TransportProtocol` | `transport_protocol` | |
+| `Encoding` | `encoding` | |
+| `HasControlProtocol` (edge) | `data_model_language_control_protocol` | Join table. |
+| `HasEncoding` (edge) | `control_protocol_encoding` | Join table. |
+| `HasTransportProtocol` (edge) | `control_protocol_transport_protocol` | Join table. |
+| `DataType` | `data_type` | |
+| `DataModelLanguageHasDataType` (edge) | *(dropped)* | Redundant with `data_type.data_model_language_id`, which already ties every DataType to exactly one DataModelLanguage. |
+| `DataModel` | `data_model` | |
+| `OfDataModelLanguage` (edge) | `data_model.data_model_language_id` | Collapsed to a FK — every DataModel is written in exactly one language in practice. |
+| `DataModelParent` + `DataModelChild` (edges) | `data_model.parent_id` | These stored the same revision-chain relationship twice, once per direction; collapsed into one self-referencing FK. |
+| `DataModelDerivedFrom` (edge) | *(not created)* | Never populated by any ETL path in the old schema either. A commented-out `ALTER TABLE data_model ADD COLUMN derived_from_id ...` is ready in `etl/src/schema.sql` if a real need shows up. |
+| `ReleaseHasDataModel` (edge) | `release_data_model` | Join table. |
+| `DataPath` | `data_path` | |
+| `DataPathFromDataModel` (edge) | `data_path_source` | Join table; its `parse_timestamp` field was never actually populated then, and still isn't now. |
+| `DataPathParent` + `DataPathChild` (edges) | `data_path.parent_id` | Same direction-mirrored collapse as DataModel's parent/child. |
+| `OfDataType` (edge) | `data_path.data_type_id` | Collapsed to a FK — observed to be functionally 1:1 in every write path. |
+| `DataPathMatch` (edge) | `data_path_match` | Was queried with `ANY` in AQL (logically undirected); PostgreSQL enforces that directly with `CHECK (data_path_a_id < data_path_b_id)` plus a `UNIQUE` pair, instead of allowing both directions to be inserted. Its `timestamp` (a Unix epoch float) became `created_at TIMESTAMPTZ`. |
+| `Calculation` | `calculation` | |
+| `InCalculation` (edge) | `calculation_input` | Join table. |
+| `CalculationResult` (edge) | `calculation_result` | Join table. |
+| `Device`, `DeviceHasDataPath` (edge), `DeviceHasDataModel` (edge) | *(not created)* | Defined in ArangoDB but never populated by any ETL path. Commented out at the bottom of `etl/src/schema.sql`; uncomment if device-inventory tracking becomes a real requirement — there's no existing data to migrate for it either way. |
 
-LET dml_dm_dp_ids = FLATTEN(
-    FOR dm_dp IN DataPathFromDataModel
-        FILTER dm_dp._from IN dml_dm_ids
-        RETURN dm_dp._to
-)
-
-LET filtered_dml_dm_dp_human_ids = FLATTEN(
-    FOR dp IN FULLTEXT(DataPath, "human_id", filter_str)
-        FILTER dp._id IN dml_dm_dp_ids
-        RETURN dp._id
-)
-
-LET filtered_dml_dm_dp_machine_ids = FLATTEN(
-    FOR dp IN FULLTEXT(DataPath, "machine_id", filter_str)
-        FILTER dp._id IN dml_dm_dp_ids
-        RETURN dp._id
-)
-
-LET filtered_dml_dm_dp_ids = UNION_DISTINCT(filtered_dml_dm_dp_human_ids, filtered_dml_dm_dp_machine_ids)
-
-LET filtered_dml_dp_dm_ids = FLATTEN(
-    FOR dm_dp IN DataPathFromDataModel
-        FILTER dm_dp._to IN filtered_dml_dm_dp_ids
-        RETURN dm_dp._from
-)
-
-RETURN MERGE(
-    FOR os IN OS
-        FILTER os.name IN ATTRIBUTES(given_os_releases)
-        SORT os.name
-        RETURN {
-            [ os.name ]: MERGE(
-                LET os_releases = FLATTEN(
-                    FOR os_release IN OSHasRelease
-                        FILTER os_release._from == os._id
-                        RETURN os_release._to
-                )
-                FOR release IN Release
-                    FILTER release._id IN os_releases
-                    FILTER release.name IN TRANSLATE(os.name, given_os_releases)
-                    SORT release.name
-                    RETURN {
-                        [ release.name ]: MERGE(
-                            LET filtered_release_dms = FLATTEN(
-                                FOR release_dm IN ReleaseHasDataModel
-                                    FILTER release_dm._from == release._id
-                                    FILTER release_dm._to IN filtered_dml_dp_dm_ids
-                                    RETURN release_dm._to
-                            )
-                            FOR dml IN DataModelLanguage
-                                FILTER dml._id IN dml_ids
-                                RETURN {
-                                    [ dml.name ]: MERGE(
-                                        LET filtered_release_dml_dms = FLATTEN(
-                                            FOR dml_dm IN OfDataModelLanguage
-                                                FILTER dml_dm._from == dml._id
-                                                FILTER dml_dm._to IN filtered_release_dms
-                                                RETURN dml_dm._to
-                                        )
-                                        FOR dm IN DataModel
-                                            FILTER dm._id IN filtered_release_dml_dms
-                                            RETURN {
-                                                [ dm.name ]: FLATTEN(
-                                                    LET filtered_release_dml_dm_dps = FLATTEN(
-                                                        FOR dm_dp IN DataPathFromDataModel
-                                                            FILTER dm_dp._from IN filtered_release_dml_dms
-                                                            FILTER dm_dp._from == dm._id
-                                                            RETURN dm_dp._to
-                                                    )
-                                                    FOR dp IN DataPath
-                                                        FILTER dp._id IN filtered_release_dml_dm_dps
-                                                        FILTER dp._id IN filtered_dml_dm_dp_ids
-                                                        FILTER dp.is_configurable == False
-                                                        FILTER dp.is_leaf == True
-                                                        SORT dp.human_id
-                                                        LIMIT @start_index, @max_return_count
-                                                        RETURN {
-                                                            "_key": dp._key,
-                                                            "human_id": dp.human_id
-                                                        }
-                                                )
-                                            }
-                                    )
-                                }
-                        )
-                    }
-            )
-        }
-)
-```
-
-#### Output
-```json
-[
-  {
-    "IOS XR": {
-      "6.3.1": {
-        "YANG": {
-          "openconfig-interfaces": [
-            {
-              "_key": "937777",
-              "human_id": "openconfig-interfaces:interfaces/interface/aggregation/state/lag-speed"
-            },
-            {
-              "_key": "937737",
-              "human_id": "openconfig-interfaces:interfaces/interface/aggregation/state/lag-type"
-            },
-            {
-              "_key": "937797",
-              "human_id": "openconfig-interfaces:interfaces/interface/aggregation/state/member"
-            }
-          ],
-          "openconfig-lacp": [
-            {
-              "_key": "3971823",
-              "human_id": "openconfig-lacp:lacp/interfaces/interface/members/member/interface"
-            },
-            ...
-          ]
-        }
-      }
-    }
-  }
-]
-```
+### Other Notable Changes
+* **Full-text search**: ArangoDB's three separate `FULLTEXT()` indexes (on `machine_id`, `human_id`, `description`) became one weighted, generated `tsvector` column plus a GIN index on `data_path`.
+* **No more separate `_key`/slug column**: ArangoDB's human-readable `_key` values (e.g. `"IOS_XE+16.7.1"`) aren't carried forward as their own column — every table already has a `UNIQUE` column or column combination (e.g. `release`'s `UNIQUE (os_id, name)`) that dedupes the same way.
+* **Explicit indexes on every foreign key**: ArangoDB gave every edge collection a free automatic `_from`/`_to` index. PostgreSQL doesn't index FK columns automatically, so every join table and FK column in the new schema has an explicit `CREATE INDEX` to avoid a performance regression.
+* **One database client instead of two**: ETL previously used `pyArango` and Web used `python-arango` — two independent, never-consolidated client libraries with separate hardcoded-credential connection code. Both now use `psycopg2`, and Web centralizes connections through a single pooled helper (`web/src/web/db.py`) instead of opening ad hoc clients at each call site.

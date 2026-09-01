@@ -1,9 +1,9 @@
 # Search
-Search in TDM is based off of [Elasticsearch](https://www.elastic.co/products/elasticsearch). Initial search using ArangoDB was effective, but extremely latent and resource intensive. Some broad terms resulted in ~60GB memory usage and took nearly a minute to return. In contrast, Elasticsearch returns in fractions of a second and holds at a steady ~1-2GB memory usage.
+Search in TDM is based off of [Elasticsearch](https://www.elastic.co/products/elasticsearch), used by the "deep search" UI (`/search_es`) for its relevance scoring, aggregations, and custom synonym analyzer described below. `data_path` also has its own weighted `tsvector`/GIN full-text column (see [Database](Database.html)) which backs the primary structured search API (`/api/v1/search`) directly in PostgreSQL. The two search implementations are independent of each other.
 
 [[toc]]
 
-Elasticsearch is *not* a source-of-truth for TDM. Elasticsearch should always be thought of as a cache of data which could potentially be out-of-sync with the ArangoDB instance of TDM which all other operations use. Elasticsearch is very-specifically a point solution to the original searchability issues.
+Elasticsearch is *not* a source-of-truth for TDM. Elasticsearch should always be thought of as a cache of data which could potentially be out-of-sync with the PostgreSQL instance of TDM which all other operations use. Elasticsearch is very-specifically a point solution to the original searchability issues, and is refreshed only by re-running the ETL's search stage — there is no live sync from PostgreSQL writes (e.g. new mappings created via the web UI) back into Elasticsearch.
 
 ## Indexing
 The index for Elasticsearch defines the schema of documents and how inputs should be processed and analyzed. The index was derived from:
@@ -189,113 +189,27 @@ The Elasticsearch query in its current form performs an aggregation on the DataP
 }
 ```
 
-### ArangoDB Query
-ArangoDB has some fulltext capabilities that we initially utilized. The query template is below. This query is wildly inefficient, but was the only one to provide a consistent upper-bound time window of return that was acceptable for usage.
+### PostgreSQL Query
+PostgreSQL's `tsvector`/GIN full-text search on `data_path` backs the query above's counterpart in `/api/v1/search`, `fetch_search_data_paths` in `web/src/web/views.py:656` — the `WHERE` clause is built up dynamically (a filter string is optional; `os`/`release`/`dml` filters are always required), but this is the fully-filtered form:
 
+```sql
+SELECT os.name AS os_name, release.name AS release_name,
+       dml.name AS dml_name, dm.name AS dm_name,
+       dp.data_path_id, dp.human_id
+FROM data_path dp
+JOIN data_path_source dps ON dps.data_path_id = dp.data_path_id
+JOIN data_model dm ON dm.data_model_id = dps.data_model_id
+JOIN data_model_language dml ON dml.data_model_language_id = dm.data_model_language_id
+JOIN release_data_model rdm ON rdm.data_model_id = dm.data_model_id
+JOIN release ON release.release_id = rdm.release_id
+JOIN os ON os.os_id = release.os_id
+WHERE (os.name, release.name) IN %(os_release_pairs)s
+  AND dml.name = ANY(%(dml_names)s)
+  AND dp.is_leaf = %(only_leaves)s
+  AND dp.search_vector @@ plainto_tsquery('simple', %(filter_str)s)
+  AND dp.is_configurable = FALSE
+ORDER BY dp.human_id
+LIMIT %(max_return_count)s OFFSET %(start_index)s
 ```
-LET given_os_releases = @filter_os_releases
-LET given_dmls = @filter_dmls
-LET filter_str = CONCAT_SEPARATOR(",", UNIQUE(SPLIT(SUBSTITUTE(@filter_str, [" ", "-", "/", ":"], ","), ",")))
 
-LET dml_ids = FLATTEN(
-    FOR dml IN DataModelLanguage
-        FILTER dml.name IN given_dmls
-        RETURN dml._id
-)
-
-LET dml_dm_ids = FLATTEN(
-    FOR dml_dm IN OfDataModelLanguage
-        FILTER dml_dm._from IN dml_ids
-        RETURN dml_dm._to
-)
-
-LET dml_dm_dp_ids = FLATTEN(
-    FOR dm_dp IN DataPathFromDataModel
-        FILTER dm_dp._from IN dml_dm_ids
-        RETURN dm_dp._to
-)
-
-LET filtered_dml_dm_dp_human_ids = FLATTEN(
-    FOR dp IN FULLTEXT(DataPath, "human_id", filter_str)
-        FILTER dp._id IN dml_dm_dp_ids
-        RETURN dp._id
-)
-
-LET filtered_dml_dm_dp_machine_ids = FLATTEN(
-    FOR dp IN FULLTEXT(DataPath, "machine_id", filter_str)
-        FILTER dp._id IN dml_dm_dp_ids
-        RETURN dp._id
-)
-
-LET filtered_dml_dm_dp_ids = UNION_DISTINCT(filtered_dml_dm_dp_human_ids, filtered_dml_dm_dp_machine_ids)
-
-LET filtered_dml_dp_dm_ids = FLATTEN(
-    FOR dm_dp IN DataPathFromDataModel
-        FILTER dm_dp._to IN filtered_dml_dm_dp_ids
-        RETURN dm_dp._from
-)
-
-RETURN MERGE(
-    FOR os IN OS
-        FILTER os.name IN ATTRIBUTES(given_os_releases)
-        SORT os.name
-        RETURN {
-            [ os.name ]: MERGE(
-                LET os_releases = FLATTEN(
-                    FOR os_release IN OSHasRelease
-                        FILTER os_release._from == os._id
-                        RETURN os_release._to
-                )
-                FOR release IN Release
-                    FILTER release._id IN os_releases
-                    FILTER release.name IN TRANSLATE(os.name, given_os_releases)
-                    SORT release.name
-                    RETURN {
-                        [ release.name ]: MERGE(
-                            LET filtered_release_dms = FLATTEN(
-                                FOR release_dm IN ReleaseHasDataModel
-                                    FILTER release_dm._from == release._id
-                                    FILTER release_dm._to IN filtered_dml_dp_dm_ids
-                                    RETURN release_dm._to
-                            )
-                            FOR dml IN DataModelLanguage
-                                FILTER dml._id IN dml_ids
-                                RETURN {
-                                    [ dml.name ]: MERGE(
-                                        LET filtered_release_dml_dms = FLATTEN(
-                                            FOR dml_dm IN OfDataModelLanguage
-                                                FILTER dml_dm._from == dml._id
-                                                FILTER dml_dm._to IN filtered_release_dms
-                                                RETURN dml_dm._to
-                                        )
-                                        FOR dm IN DataModel
-                                            FILTER dm._id IN filtered_release_dml_dms
-                                            RETURN {
-                                                [ dm.name ]: FLATTEN(
-                                                    LET filtered_release_dml_dm_dps = FLATTEN(
-                                                        FOR dm_dp IN DataPathFromDataModel
-                                                            FILTER dm_dp._from IN filtered_release_dml_dms
-                                                            FILTER dm_dp._from == dm._id
-                                                            RETURN dm_dp._to
-                                                    )
-                                                    FOR dp IN DataPath
-                                                        FILTER dp._id IN filtered_release_dml_dm_dps
-                                                        FILTER dp._id IN filtered_dml_dm_dp_ids
-                                                        FILTER dp.is_configurable == False
-                                                        FILTER dp.is_leaf == True
-                                                        SORT dp.human_id
-                                                        LIMIT @start_index, @max_return_count
-                                                        RETURN {
-                                                            "_key": dp._key,
-                                                            "human_id": dp.human_id
-                                                        }
-                                                )
-                                            }
-                                    )
-                                }
-                        )
-                    }
-            )
-        }
-)
-```
+Rows come back flat, and `fetch_search_data_paths` builds an `OS → Release → DataModelLanguage → DataModel → [DataPath]` nested dict shape in plain Python afterward. See [Database](Database.html#example-sql) for more query examples against the current schema.

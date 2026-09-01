@@ -146,8 +146,8 @@ DME can be explored via `http://<nx-os_ip>/visore.html` on NX-OS devices. In a w
 ### Docker
 [Docker](https://www.docker.com/) is an incredibly useful utility in that it resolves a significant amount of packaging and deployment difficulty that may have been experienced in the past. It (effectively) "containerizes" an OS ecosystem so that you never have a shared library conflict or random configuration conflict ever again. It is (effectively) the de-facto container deployment technology now today. One of the benefits here is that when you download TDM, you only need Docker as a dependency and our associated Docker-related files will resolve all internal dependencies with zero human work involved. This is amazing for development, and for production we can look towards bare-metal if there are performance concerns. Docker has a nice [Get Started](https://docs.docker.com/get-started/) series, just read this section in its entirety.
 
-### ArangoDB
-[ArangoDB](https://arangodb.com/) is a fairly unique database. It accomodates several powerful concepts at once allowing for powerful query capabilities. With a combination of graph, key/value, and document storage - it is possible to execute graph queries which filter on key/values and return documents (as an example). This is not a common capability. For reference, please read the [ArangoDB manual](https://docs.arangodb.com/latest/Manual/).
+### PostgreSQL
+[PostgreSQL](https://www.postgresql.org/) is TDM's source-of-truth database. TDM's schema is a normalized relational one - entities are tables with surrogate `BIGINT` primary keys, and relationships between them are plain foreign keys or small join tables. PostgreSQL also provides its own full-text search via a generated `tsvector` column on `DataPath`, which backs the primary structured search API (see [Search](/dev/architecture/Search.html)). For reference, please read the [PostgreSQL manual](https://www.postgresql.org/docs/current/).
 
 ### Elasticsearch
 [Elasticsearch](https://www.elastic.co/) provides extremely fast search and analysis capabilities against almost any corpus of data able to be fed into it. Elasticsearch is used for the Search feature.
@@ -159,8 +159,6 @@ DME can be explored via `http://<nx-os_ip>/visore.html` on NX-OS devices. In a w
 This talk covers YANG and more. Benoit Claise is a very knowledgeable guy when it comes to this stuff.
 * [Introduction to SNMP - Simple Network Management Protocol](https://www.youtube.com/watch?v=ZX-XGQoISHQ)
 * [Docker Tutorial - What is Docker & Docker Containers, Images, etc?](https://www.youtube.com/watch?v=pGYAg7TMmp0)
-* [Graph Databases Will Change Your Freakin Life](https://www.youtube.com/watch?v=3vleFxDGoEs)  
-This is a nice introduction to understanding graph databases, and why we might want to use them in this project!
 
 ### xrdocs.github.io
 [xrdocs](https://xrdocs.github.io/) is perhaps one of the best resources to learn about Model-Driven Telemetry usage. It details how to gain access to IOS XRv, configure MDT, and use MDT via `pipeline`. This is IOS XR specific, but covers usage of YANG modules which is valuable.

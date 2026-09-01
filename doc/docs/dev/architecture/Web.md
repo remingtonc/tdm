@@ -32,8 +32,8 @@ Backup the TDM database of Data Path Mappings.
 ## Libraries
 * [Flask](http://flask.pocoo.org/)  
 Flask is a Python microframework for web-based services development. It's super awesome.
-* [python-arango](https://github.com/joowani/python-arango)  
-Great Python ArangoDB client.
+* [psycopg2](https://www.psycopg.org/)  
+PostgreSQL client library. `web/src/web/db.py` centralizes connections in a pooled `psycopg2.pool.ThreadedConnectionPool`, handing out a `RealDictCursor` via a `cursor()` contextmanager that commits on success and rolls back on exception. No ORM is used; queries are plain SQL.
 * [elasticsearch](https://github.com/elastic/elasticsearch-py)  
 Low-level Elasticsearch client.
 * [CiscoUIKit](https://github.com/CiscoDevNet/CiscoUIKit)  
