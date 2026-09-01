@@ -16,6 +16,7 @@ import json
 import csv
 import io
 from collections import OrderedDict
+from datetime import datetime, timezone
 import flask
 from itertools import chain
 from elasticsearch import Elasticsearch
@@ -234,6 +235,33 @@ def _fetch_given_data_paths(cur, given_dps):
         WHERE human_id = ANY(%(dps)s) OR machine_id = ANY(%(dps)s)
     """, {'dps': list(given_dps)})
     return cur.fetchall()
+
+def _resolve_data_path_ids(cur, values):
+    """Batch equivalent of resolve_data_path_id: one query for many values.
+
+    Priority matches resolve_data_path_id -- machine_id (unique) wins over
+    human_id (not unique) for the same input value.
+    """
+    values = list(values)
+    by_machine_id = {}
+    by_human_id = {}
+    for row in _fetch_given_data_paths(cur, values):
+        if row['machine_id'] is not None:
+            by_machine_id.setdefault(row['machine_id'], []).append(row)
+        if row['human_id'] is not None:
+            by_human_id.setdefault(row['human_id'], []).append(row)
+    resolved = {}
+    for value in values:
+        if value in by_machine_id:
+            resolved[value] = by_machine_id[value][0]['data_path_id']
+            continue
+        matches = by_human_id.get(value, [])
+        if not matches:
+            raise Exception('Unable to find (machine_id or human_id: %s)!' % value)
+        if len(matches) > 1:
+            raise Exception('More than one document exists for (machine_id or human_id: %s)!' % value)
+        resolved[value] = matches[0]['data_path_id']
+    return resolved
 
 def fetch_matches(given_dps):
     results = []
@@ -820,19 +848,22 @@ def api_map_load_native():
 
 def map_datapath_calculation_single(name, description, equation, author, InCalculation, CalculationResult):
     with db.cursor() as cur:
-        in_calculation_ids = {resolve_data_path_id(cur, dp) for dp in InCalculation}
-        calculation_result_ids = {resolve_data_path_id(cur, dp) for dp in CalculationResult}
-        # calculation.name has no UNIQUE constraint to rely on instead.
-        cur.execute('SELECT 1 FROM calculation WHERE name = %s', (name,))
-        if cur.fetchone() is not None:
-            raise Exception('Calculation of name %s already exists!' % name)
+        resolved = _resolve_data_path_ids(cur, set(InCalculation) | set(CalculationResult))
+        in_calculation_ids = {resolved[dp] for dp in InCalculation}
+        calculation_result_ids = {resolved[dp] for dp in CalculationResult}
         app.logger.debug('Adding calculation %s', name)
+        # calculation.name is UNIQUE; ON CONFLICT makes the existence check
+        # atomic with the insert instead of a racy SELECT-then-INSERT.
         cur.execute("""
             INSERT INTO calculation (name, description, equation, author)
             VALUES (%s, %s, %s, %s)
+            ON CONFLICT (name) DO NOTHING
             RETURNING calculation_id
         """, (name, description, equation, author))
-        calculation_id = cur.fetchone()['calculation_id']
+        row = cur.fetchone()
+        if row is None:
+            raise Exception('Calculation of name %s already exists!' % name)
+        calculation_id = row['calculation_id']
         for dp_id in in_calculation_ids:
             cur.execute(
                 'INSERT INTO calculation_input (data_path_id, calculation_id) VALUES (%s, %s)',
@@ -853,7 +884,8 @@ def map_datapath_single(_from, _to, author, annotation, timestamp=None, validate
             cur, dp_one_id, dp_two_id, author, annotation,
             validated=validated,
             weight=weight,
-            needs_human=needs_human or True if annotation else False
+            needs_human=needs_human or True if annotation else False,
+            created_at=datetime.fromtimestamp(timestamp, tz=timezone.utc) if timestamp is not None else None
         )
 
 @app.route('/api/v1/map/datapath/single', methods=['POST'])
@@ -893,13 +925,15 @@ def map_datapath_single_by_key(basepath_key, matchpath_key, author, weight, anno
 def resolve_data_path_id(cur, value):
     """Resolve a machine_id or human_id to its data_path_id.
 
-    machine_id is UNIQUE so it can never be ambiguous on its own, but
-    human_id is not -- keep the "more than one match" guard.
+    machine_id is UNIQUE so it can never be ambiguous on its own and is
+    checked first, short-circuiting before human_id (which is not unique)
+    is ever consulted -- matches the old Arango lookup's field priority.
     """
-    cur.execute(
-        'SELECT data_path_id FROM data_path WHERE machine_id = %s OR human_id = %s',
-        (value, value)
-    )
+    cur.execute('SELECT data_path_id FROM data_path WHERE machine_id = %s', (value,))
+    row = cur.fetchone()
+    if row is not None:
+        return row['data_path_id']
+    cur.execute('SELECT data_path_id FROM data_path WHERE human_id = %s', (value,))
     rows = cur.fetchall()
     if not rows:
         raise Exception('Unable to find (machine_id or human_id: %s)!' % value)
@@ -907,7 +941,7 @@ def resolve_data_path_id(cur, value):
         raise Exception('More than one document exists for (machine_id or human_id: %s)!' % value)
     return rows[0]['data_path_id']
 
-def insert_data_path_match(cur, dp_one_id, dp_two_id, author, annotation, validated=False, weight=0, needs_human=True):
+def insert_data_path_match(cur, dp_one_id, dp_two_id, author, annotation, validated=False, weight=0, needs_human=True, created_at=None):
     """Insert a DataPathMatch row.
 
     data_path_match enforces CHECK (data_path_a_id < data_path_b_id) as its
@@ -915,15 +949,18 @@ def insert_data_path_match(cur, dp_one_id, dp_two_id, author, annotation, valida
     ascending before insert regardless of which one is "base"/"match" on
     the caller's side. ON CONFLICT reproduces the old "mapping already
     exists" error instead of a raw constraint violation reaching the user.
+
+    created_at defaults to now() at insert time; pass an explicit value
+    to preserve a caller-supplied timestamp (e.g. restoring a native dump).
     """
     a_id, b_id = sorted((dp_one_id, dp_two_id))
     cur.execute("""
         INSERT INTO data_path_match
-            (data_path_a_id, data_path_b_id, author, validated, weight, annotation, needs_human)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+            (data_path_a_id, data_path_b_id, author, validated, weight, annotation, needs_human, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, COALESCE(%s, now()))
         ON CONFLICT (data_path_a_id, data_path_b_id) DO NOTHING
         RETURNING data_path_match_id
-    """, (a_id, b_id, author, validated, weight, annotation, needs_human))
+    """, (a_id, b_id, author, validated, weight, annotation, needs_human, created_at))
     if cur.fetchone() is None:
         raise Exception('Mapping already exists!')
 

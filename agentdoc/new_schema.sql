@@ -262,7 +262,7 @@ CREATE INDEX idx_dpm_data_path_b_id ON data_path_match (data_path_b_id);
 
 CREATE TABLE calculation (
     calculation_id  BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    name             TEXT NOT NULL,
+    name             TEXT NOT NULL UNIQUE,
     description      TEXT,
     equation         TEXT,  -- free text; order of operations not parsed/enforced, same as original
     author           TEXT
