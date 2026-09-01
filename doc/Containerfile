@@ -1,6 +1,7 @@
 FROM node:20-alpine
 WORKDIR /data/
 RUN yarn global add vuepress@1.2.0 vue-template-compiler@^2.6.10
+ENV NODE_PATH=/usr/local/share/.config/yarn/global/node_modules
 COPY package.json package.json
 COPY docs/ docs/
 ENTRYPOINT [ "yarn" ]
